@@ -370,3 +370,252 @@ class CorrectedEuclideanManifold(Manifold):
         log = torch.einsum("NMab,NMLb->NMLa", hessian_inv, prelog)  # dimensions: (N, M, d)
 
         return log
+
+
+class CorrectedEuclideanManifold2(Manifold):
+    def __init__(self, base_manifold_params, correction_encoder, beta, learnable_beta):
+        assert 'd' in base_manifold_params
+        super().__init__(d=base_manifold_params['d'])
+
+        self.base_manifold = Euclidean(**base_manifold_params)
+        self.correction_encoder = correction_encoder
+        self.disable_correction = False
+
+        assert isinstance(learnable_beta, bool)
+        self.learnable = learnable_beta
+
+        self.beta = nn.Parameter(torch.tensor([1.], dtype=torch.float32), requires_grad=learnable_beta)
+        if beta is not None:
+            assert isinstance(beta, float) and beta >= 0.
+            beta_val = beta
+        else:
+            with torch.no_grad():
+                beta_val = self.init_correction_coeff()
+        self.beta.data.fill_(beta_val)
+
+    def init_correction_coeff(self):
+        # generate mesh data
+        x = torch.linspace(0, torch.pi, 30)
+        y = torch.linspace(0, 1, 30)
+        xv, yv = torch.meshgrid(x, y)
+        xy = torch.vstack([xv.ravel(), yv.ravel()]).T
+        ps = xy[None]
+        target = torch.tensor([torch.pi, 0])[None, None].float()
+
+        # compute base and corrected prelogs
+        base_prelogs = self.base_manifold.log(ps, target).squeeze([0, 2])
+        correction_prelogs, _, _, _ = self.prelog(ps, target)
+        correction_prelogs = correction_prelogs.squeeze([0, 2])
+
+        # set beta so the correction prelogs norm mean is the same magnitude as the base prelogs norm mean
+        base_prelogs_norm_mean = torch.norm(base_prelogs, dim=1).mean()
+        correction_prelogs_norm_mean = torch.norm(correction_prelogs, dim=1).mean()
+        correction_coeff = 100 * (base_prelogs_norm_mean / correction_prelogs_norm_mean).item()
+
+        return correction_coeff
+
+    def pairwise_distance(self, x, y):
+        """
+        Manifold distance between points x and y
+        :param x: N x M x d tensor
+        :param y: N x M' x d tensor
+        :return: N x M x M' tensor
+        """
+
+        base_dists = self.base_manifold.pairwise_distance(x, y)  # dimensions: (N, M, M')
+        if self.disable_correction:
+            return base_dists
+
+        x_enc = self.correction_encoder.forward_2d_batch(x)  # dimensions: (N, M, enc_dim)
+        y_enc = self.correction_encoder.forward_2d_batch(y)  # dimensions: (N, M', enc_dim)
+        x_enc = x_enc.unsqueeze(2)  # dimensions: (N, M, 1, enc_dim)
+        y_enc = y_enc.unsqueeze(1)  # dimensions: (N, 1, M', enc_dim)
+
+        deep_dists = torch.linalg.norm(x_enc - y_enc, dim=3)  # dimensions: (N, M, M')
+
+        corrected_dists = torch.sqrt(base_dists ** 2 + self.beta * deep_dists ** 2)  # dimensions: (N, M, M')
+        return corrected_dists
+
+    def distance(self, x, y):
+        """
+        :param x: N x M x d tensor
+        :param y: N x M x d tensor
+        :return: N x M tensor
+        """
+        base_dists = self.base_manifold.distance(x, y)  # dimensions: (N, M)
+        if self.disable_correction:
+            return base_dists
+
+        x_enc = self.correction_encoder.forward_2d_batch(x)  # dimensions: (N, M, enc_dim)
+        y_enc = self.correction_encoder.forward_2d_batch(y)  # dimensions: (N, M, enc_dim)
+
+        deep_dists = torch.linalg.norm(x_enc - y_enc, dim=2)  # dimensions: (N, M)
+
+        corrected_dists = torch.sqrt(base_dists ** 2 + self.beta * deep_dists ** 2)
+        return corrected_dists
+
+    def forward(self, x, y):
+        return self.distance(x, y)
+
+    def norm(self, x, X):
+        """
+
+        :param x: N x M x d tensor
+        :param X: N x M x L x d tensor
+        :return: N x M x L tensor
+        """
+        assert x.shape[0] == X.shape[0]
+
+        N = x.shape[0]
+        M = x.shape[1]
+        L = X.shape[2]
+
+        norm = torch.zeros(N, M, L)
+        for l in range(L):
+            norm[:, :, l] = torch.sqrt(
+                self.inner(x, X[:, :, l, :][:, :, None, :], X[:, :, l, :][:, :, None, :])[:, :, 0])
+
+        return norm
+
+    def inner(self, x, X, Y):
+        """
+
+        :param x: N x M x d tensor
+        :param X: N x M x L x d tensor
+        :param Y: N x M x K x d tensor
+        :return: N x M x L x K tensor
+        """
+        assert x.shape[0] == X.shape[0] == Y.shape[0]
+
+        H = self.metric_tensor(x)  # dimensions: (N, M, d, d)
+        inner = torch.einsum("NMij,NMLi,NMKj->NMLK", H, X, Y)
+
+        return inner
+
+    def metric_tensor(self, x):
+        """
+
+        :param x: N x M x d tensor
+        :param asmatrix:
+        :return: N x M x d x d
+        """
+
+        #x_enc = self.correction_encoder.forward_2d_batch(x)  # dimensions: (N, M, enc_dim)
+        #x_enc_norm = torch.linalg.vector_norm(x_enc, dim=2, keepdim=True).unsqueeze(2)  # dimensions: (N, M, 1, 1)
+        enc_grad = self.correction_encoder.enc_grad(x, twodim_batch=True)  # dimensions: (N, M, enc_dim, d)
+        hessian = 2 * torch.einsum('NMij,NMik->NMjk', enc_grad, enc_grad)  # dimensions: (N, M, d, d)
+
+        return hessian
+
+    def geodesic(self, x, y, tau, step_size=1., max_iter=100, tol=1e-3, debug=False):
+        """
+
+        :param x: N x 1 x d tensor
+        :param y: N x 1 x d tensor
+        :param tau: M tensor
+
+        :param step_size: float
+        :param max_iter: int
+        :param tol: float
+        :param debug: bool
+        :return: N x M x d tensor
+        """
+
+        if self.disable_correction:
+            return self.base_manifold.geodesic(x, y, tau)
+
+        assert x.shape[0] == y.shape[0] and x.shape[1] == y.shape[1] == 1
+
+        error0 = self.distance(x, y).max() + 1e-6
+        relerror = 1.
+        k = 1
+        z = torch.ones(len(tau))[None, :, None].to(x.device) * y
+        while relerror > tol and k <= max_iter:
+            # compute grad
+            grad_Wzx = - self.log(z, x)[:, :, 0]
+            validate_tensor(grad_Wzx, "grad_Wzx")
+
+            grad_Wzy = - self.log(z, y)[:, :, 0]
+            validate_tensor(grad_Wzy, "grad_Wzy")
+
+            grad_Wz = (1 - tau[None, :, None]) * grad_Wzx + tau[None, :, None] * grad_Wzy
+            # update z
+            z = z - step_size * grad_Wz
+            validate_tensor(z, "z")
+
+            # compute new error
+            error = self.norm(z, grad_Wz[:, None]).max()
+            relerror = error / error0
+            if debug:
+                print(f"{k} | relerror = {relerror}")
+
+            k = k + 1
+
+        return z
+
+    # def log_corr_hessian(self, x_enc_norm, aux_fun_grad_val):
+    #     # compute hessian for log^2(||x||^2 + 1 / ||.||^2 + 1)
+    #     scalar_coeff = 8 / (x_enc_norm ** 2 + 1) ** 2  # dimensions: (N, M, 1, 1)
+    #     scalar_coeff = scalar_coeff.squeeze((2, 3))  # dimensions: (N, M)
+    #     correction_hessian = self.beta * 0.5 * torch.einsum("NM,NMa,NMb->NMab", scalar_coeff, aux_fun_grad_val, aux_fun_grad_val)  # dimensions: (N, M, d, d)
+    #     return correction_hessian
+
+    def prelog(self, x, y):
+        """
+        :param x: N x M x d tensor
+        :param y: N x M' x d tensor
+        :return: N x M x M' x d tensor
+        """
+        prelog = self.base_manifold.log(x, y)  # dimensions: (N, M, M', d)
+        validate_tensor(prelog, 'prelog')
+        if self.disable_correction:
+            return prelog
+
+        x_enc = self.correction_encoder.forward_2d_batch(x)  # dimensions: (N, M, enc_dim)
+        y_enc = self.correction_encoder.forward_2d_batch(y)  # dimensions: (N, M', enc_dim)
+        x_enc = x_enc.unsqueeze(2)  # dimensions: (N, M, 1, enc_dim)
+        y_enc = y_enc.unsqueeze(1)  # dimensions: (N, 1, M', enc_dim)
+        diffs = x_enc - y_enc  # dimensions: (N, M, M', enc_dim)
+
+        enc_grad = self.correction_encoder.enc_grad(x, twodim_batch=True)  # dimensions: (N, M, enc_dim, d)
+        enc_grad = enc_grad.unsqueeze(2)  # dimensions: (N, M, 1, enc_dim, d)
+
+        # 3. combine to get correction gradient
+        deep_corr_grad = 2 * torch.einsum('NMKij,NMKi->NMKj', enc_grad, diffs)  # dimensions: (N, M, M', d)
+        validate_tensor(deep_corr_grad, 'deep_corr_grad')
+        deep_corr_grad = - 0.5 * deep_corr_grad
+
+        corr_prelog = self.beta * deep_corr_grad
+
+        out = prelog + corr_prelog
+        validate_tensor(out, 'out')
+
+        return out, None, enc_grad.squeeze(2), corr_prelog
+
+    def log(self, x, y):
+        """
+        :param x: N x M x d tensor
+        :param y: N x M' x d tensor
+        :return: N x M x M' x d tensor
+        """
+        assert len(x.shape) == len(y.shape)
+        assert x.shape[0] == y.shape[0]
+        assert x.shape[-1] == y.shape[-1] == self.base_manifold.d
+
+        log = self.base_manifold.log(x, y)
+        validate_tensor(log, 'log')
+        if self.disable_correction:
+            return log
+
+        prelog, _, enc_grad, _ = self.prelog(x, y)  # prelog dimensions: (N, M, M', d)
+        print(enc_grad.shape)
+
+        base_hessian = torch.eye(self.base_manifold.d).to(x.device)
+        base_hessian = base_hessian.unsqueeze(0).unsqueeze(0)  # dimensions: (1, 1, d, d)
+        correction_hessian = 2 * torch.einsum('NMij,NMik->NMjk', enc_grad, enc_grad)  # dimensions: (N, M, d, d)
+        hessian = base_hessian + correction_hessian  # dimensions: (N, M, d, d)
+        hessian_inv = torch.linalg.inv(hessian)
+
+        log = torch.einsum("NMab,NMLb->NMLa", hessian_inv, prelog)  # dimensions: (N, M, d)
+
+        return log

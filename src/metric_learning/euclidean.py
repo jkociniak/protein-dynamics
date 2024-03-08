@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.func import vmap, grad, functional_call
+from torch.func import vmap, grad, functional_call, jacfwd
 
 
 class EuclNoBatchWrapper(nn.Module):
@@ -83,6 +83,28 @@ class EuclideanPointEncoder(nn.Module):
             return mean_fro_norm, x_enc_norm, mean_smoothness_error
         else:
             return mean_fro_norm, x_enc_norm
+
+    def enc_grad(self, x, twodim_batch=False):
+        # to use vmap we need a function that does not expect batch dimension
+        single_example_encoder = EuclNoBatchWrapper(self)
+
+        def aux_fun(params, x):
+            return functional_call(single_example_encoder, params, x)  # dimensions: (enc_dim)
+
+        aux_fun_grad = jacfwd(aux_fun, argnums=1)
+        batch_aux_fun_grad = vmap(aux_fun_grad, in_dims=(None, 0))
+        model_params = dict(single_example_encoder.named_parameters())
+
+        if twodim_batch:
+            assert len(x.shape) == 3
+            assert x.shape[2] == self.input_dim
+            batch_2d_aux_fun_grad = vmap(batch_aux_fun_grad, in_dims=(None, 0))
+            aux_fun_grad_val = batch_2d_aux_fun_grad(model_params, x)  # dimensions: (N, M, enc_dim, d)
+        else:
+            assert len(x.shape) == 2
+            assert x.shape[1] == self.input_dim
+            aux_fun_grad_val = batch_aux_fun_grad(model_params, x)  # dimensions: (N, enc_dim, d)
+        return aux_fun_grad_val
 
 
 class Sine(nn.Module):
