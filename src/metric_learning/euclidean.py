@@ -117,7 +117,7 @@ def init_weights_normal(m):
 
 
 class FourierEmbedding(nn.Module):
-    def __init__(self, input_dim, output_dim, append=False):
+    def __init__(self, input_dim, output_dim, append=False, B_init=None):
         super().__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
@@ -125,7 +125,8 @@ class FourierEmbedding(nn.Module):
 
         # we wrap this stuff as Parameters to allow Pytorch Lightning to recognize them
         # in order to be able to determine the right device
-        self.B = nn.Parameter(torch.randn(output_dim, input_dim), requires_grad=False)
+        B = B_init if B_init is not None else torch.randn(output_dim, input_dim)
+        self.B = nn.Parameter(B, requires_grad=False)
         a = torch.tensor(1., dtype=torch.float32).view(1, -1) #/ torch.arange(1, output_dim + 1, dtype=torch.float32).view(1, -1)
         self.a = nn.Parameter(a, requires_grad=False)
 
@@ -152,14 +153,12 @@ class MLP(EuclideanPointEncoder):
             self.embedding = FourierEmbedding(in_features, fourier_features, append=fourier_append)
             in_features = 2 * fourier_features if not fourier_append else in_features + 2 * fourier_features
 
-        # Dictionary that maps nonlinearity name to the respective function, initialization, and, if applicable,
-        # special first-layer initialization scheme
-        # nls_and_inits = {'sine': (Sine(), sine_init, first_layer_sine_init),
-        #                  'relu': (nn.ReLU(inplace=True), init_weights_normal, None)}
-        #
-        # nl, nl_weight_init, first_layer_init = nls_and_inits[nonlinearity]
+        #Dictionary that maps nonlinearity name to the respective function, initialization, and, if applicable,
+        #special first-layer initialization scheme
+        nls_and_inits = {'sine': (Sine(), sine_init, first_layer_sine_init),
+                         'relu': (nn.ReLU(inplace=True), init_weights_normal, None)}
 
-        nl = nn.ReLU(inplace=True)
+        nl, nl_weight_init, first_layer_init = nls_and_inits[nonlinearity]
 
         self.layers = nn.ModuleList()
         self.layers.extend((nn.Linear(in_features, hidden_features), nl))
@@ -172,17 +171,60 @@ class MLP(EuclideanPointEncoder):
         else:
             self.layers.extend((nn.Linear(hidden_features, out_features), nl))
 
-        # if first_layer_init is not None:  # Apply special initialization to first layer, if applicable.
-        #     self.layers[0].apply(first_layer_init)
-        #
-        # for i in range(1, len(self.layers)):
-        #     self.layers[i].apply(nl_weight_init)
+        if first_layer_init is not None:  # Apply special initialization to first layer, if applicable.
+            self.layers[0].apply(first_layer_init)
+
+        for i in range(1, len(self.layers)):
+            self.layers[i].apply(nl_weight_init)
 
     def forward(self, coords):
         x = self.embedding(coords)
         x = self.layers[0](x)
         for layer in self.layers[1:-1]:
             x = layer(x) + x
+
+        x = self.layers[-1](x)
+        return x
+
+
+class MLP2(EuclideanPointEncoder):
+    def __init__(self, in_features, out_features, hidden_features, num_hidden_layers,
+                 outermost_linear=False, nonlinearity='relu', skip_connection=False):
+        super().__init__(input_dim=in_features, output_dim=out_features)
+        assert isinstance(skip_connection, bool)
+        self.skip_connection = skip_connection
+
+        #Dictionary that maps nonlinearity name to the respective function, initialization, and, if applicable,
+        #special first-layer initialization scheme
+        nls_and_inits = {'sine': (Sine(), sine_init, first_layer_sine_init),
+                         'relu': (nn.ReLU(inplace=True), init_weights_normal, None)}
+
+        nl, nl_weight_init, first_layer_init = nls_and_inits[nonlinearity]
+
+        self.layers = nn.ModuleList()
+        self.layers.extend((nn.Linear(in_features, hidden_features), nl))
+
+        for i in range(num_hidden_layers):
+            self.layers.extend((nn.Linear(hidden_features, hidden_features), nl))
+
+        if outermost_linear:
+            self.layers.append(nn.Linear(hidden_features, out_features))
+        else:
+            self.layers.extend((nn.Linear(hidden_features, out_features), nl))
+
+        if first_layer_init is not None:  # Apply special initialization to first layer, if applicable.
+            self.layers[0].apply(first_layer_init)
+
+        for i in range(1, len(self.layers)):
+            self.layers[i].apply(nl_weight_init)
+
+    def forward(self, coords):
+        x = self.layers[0](coords)
+        for layer in self.layers[1:-1]:
+            if self.skip_connection:
+                x = layer(x) + x
+            else:
+                x = layer(x)
 
         x = self.layers[-1](x)
         return x
