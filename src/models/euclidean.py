@@ -61,7 +61,7 @@ class EuclideanPointEncoder(nn.Module):
             aux_fun_grad_val = batch_aux_fun_grad(model_params, x)  # dimensions: (N, d)
         return aux_fun_grad_val
 
-    def hessian_fro_norm(self, x, smoothness_loss=False):
+    def hessian_fro_norm(self, x):
         # we asssume x of dimensions (N, M, d)
         x_enc = self.forward_2d_batch(x)  # dimensions: (N, M, enc_dim)
         x_enc_norm = torch.linalg.norm(x_enc, dim=2)  # dimensions: (N, M)
@@ -72,17 +72,7 @@ class EuclideanPointEncoder(nn.Module):
 
         # 1. mean frobenius norm of the hessian
         mean_fro_norm = torch.mean(scalar_coeff * grad_norm)
-
-        # 2. curve smoothness loss
-        if smoothness_loss:
-            norm_ends = fro_norm[:, 1:]
-            norm_starts = fro_norm[:, :-1]
-            losses = (norm_ends - norm_starts) ** 2  # dimensions: (N, M - 1)
-            mean_smoothness_error = torch.mean(losses)
-
-            return mean_fro_norm, x_enc_norm, mean_smoothness_error
-        else:
-            return mean_fro_norm, x_enc_norm
+        return mean_fro_norm, x_enc_norm
 
     def enc_grad(self, x, twodim_batch=False):
         # to use vmap we need a function that does not expect batch dimension
@@ -139,15 +129,21 @@ def init_weights_normal(m):
 
 
 class FourierEmbedding(nn.Module):
-    def __init__(self, input_dim, output_dim, append=False, B_init=None):
+    def __init__(self, input_dim, output_dim, append=False, sigma=None):
         super().__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.append = append
 
+        assert isinstance(sigma, (type(None), float))
+        self.sigma = 1.
+        if sigma is not None:
+            assert sigma > 0.
+            self.sigma = sigma
+
         # we wrap this stuff as Parameters to allow Pytorch Lightning to recognize them
         # in order to be able to determine the right device
-        B = B_init if B_init is not None else torch.randn(output_dim, input_dim)
+        B = self.sigma * torch.randn(output_dim, input_dim)
         self.B = nn.Parameter(B, requires_grad=False)
         a = torch.tensor(1., dtype=torch.float32).view(1, -1) #/ torch.arange(1, output_dim + 1, dtype=torch.float32).view(1, -1)
         self.a = nn.Parameter(a, requires_grad=False)
@@ -250,6 +246,16 @@ class MLP2(EuclideanPointEncoder):
 
         x = self.layers[-1](x)
         return x
+
+
+class FourierMLP(EuclideanPointEncoder):
+    def __init__(self, embedding, mlp):
+        super().__init__(embedding.input_dim, mlp.output_dim)
+        self.embedding = embedding
+        self.mlp = mlp
+
+    def forward(self, x):
+        return self.mlp(self.embedding(x))
 
 
 class EnsembleEuclideanMLPEncoder(EuclideanPointEncoder):

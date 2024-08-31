@@ -1,0 +1,37 @@
+defaults:
+      - _self_
+      - dataset: hyper_4d
+      - encoder: siren_w10.0_relu
+      - loss: arch_comparison_2d
+
+decoder: null
+
+corrected_manifold:
+      _target_: src.manifolds.euclidean.L2CorrectedEuclideanManifold
+      base_manifold_params:
+            d: 2
+      alpha: 1e-4
+      beta: 1.
+
+optimizer:
+      _target_: torch.optim.Adam
+      lr: 1e-5
+      weight_decay: 0.
+
+scheduler: null
+
+training_params:
+      seed: 42
+      batch_size: 100
+      max_epochs: 10
+      accelerator: cpu
+      devices: 1
+      trainer_root_dir: null
+      ckpt_path: null
+      log_dir: lightning_logs
+      name: default
+
+plotter:
+      _target_: src.utils.plotting.Plotter2D
+      start_epoch: 0
+      freq: 10

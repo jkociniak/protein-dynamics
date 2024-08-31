@@ -2,7 +2,10 @@ from abc import ABC, abstractmethod
 
 import torch
 import torch.nn as nn
-from torch.func import vmap
+from torch.func import vmap, functional_call, vjp
+
+from src.models.euclidean import EuclNoBatchWrapper
+
 
 
 class MetricTensorRegularizer(nn.Module, ABC):
@@ -150,3 +153,129 @@ class FakeRegularizer(MetricTensorRegularizer):
 
     def generate_negatives(self, x):
         return torch.tensor([], dtype=torch.float32)
+
+
+class NormRegularizer(nn.Module, ABC):
+    def __init__(self, correction_encoder, pos_weight=1., neg_weight=1.):
+        super().__init__()
+        self.correction_encoder = correction_encoder
+        self.pos_weight = pos_weight
+        self.neg_weight = neg_weight
+        # self.min_pos_norm = min_pos_norm
+        # self.max_neg_norm = max_neg_norm
+
+    def forward(self, x):
+        positives = self.generate_positives(x)
+        pos_norm = torch.linalg.norm(positives, dim=-1).mean()
+        #pos_norm = torch.clamp(pos_norm, min=self.min_pos_norm)
+        pos_mean_loss = self.pos_weight * pos_norm
+
+        negatives = self.generate_negatives(x)
+        neg_norm = torch.linalg.norm(negatives, dim=-1).mean()
+        #neg_norm = torch.clamp(neg_norm, max=self.max_neg_norm)
+        neg_mean_loss = -self.neg_weight * neg_norm
+
+        return pos_mean_loss, neg_mean_loss
+        #
+        # out = {'pos_mean_loss': pos_mean_loss, 'neg_mean_loss': neg_mean_loss,
+        #        'pos_norm': pos_norm, 'neg_norm': neg_norm}
+        # return out
+
+    @abstractmethod
+    def generate_positives(self, x):
+        pass
+
+    @abstractmethod
+    def generate_negatives(self, x):
+        pass
+
+
+class EnvelopeNormRegularizer(NormRegularizer):
+    def __init__(self, *args, neg_samples_eps=0.3, **kwargs):
+        super().__init__(*args, **kwargs)
+        assert isinstance(neg_samples_eps, float) and neg_samples_eps > 0.
+        self.neg_samples_eps = neg_samples_eps
+
+    def generate_negatives(self, x):
+        assert len(x.shape) == 3  # dimensions: (B, L, D)
+        assert x.shape[2] == 2  # implementation only for 2D data
+
+        # 1. compute the start and end points of each segment
+        x1 = x[:, :-1, :]
+        x2 = x[:, 1:, :]
+
+        # 2. compute the midpoints of each segment
+        def perpendicular_segment(segment, eps=0.05):
+            # segment is represented by a tuple of two 2D points
+            # so dims should be (2, 2)
+            # Calculate midpoint of the segment
+            start, end = segment
+            midpoint = (start + end) / 2
+            d = end - start
+            perp = torch.tensor([[0, 1], [-1, 0]], dtype=torch.float32).to(d.device) @ d
+            perp /= torch.linalg.norm(perp)
+            perp *= eps
+            perp_segment = torch.stack([midpoint - perp, midpoint + perp], dim=0)
+            return perp_segment
+
+        perp_fn = vmap(vmap(perpendicular_segment, in_dims=(0, None)), in_dims=(0, None))
+        input = torch.stack([x1, x2], dim=2)
+
+        perp_segments = perp_fn(input, self.neg_samples_eps)  # dimensions: (B, L-1, 2, 2)
+        perp_segments = perp_segments.view(-1, 2 * perp_segments.shape[1], 2)  # dimensions: (B, 2 * (L-1), 2)
+
+        return perp_segments
+
+    def generate_positives(self, x):
+        return x
+
+
+class PerpGradsRegularizer(nn.Module):
+    def __init__(self, correction_encoder):
+        super().__init__()
+        self.correction_encoder = correction_encoder
+
+    def forward(self, x):
+        single_example_encoder = EuclNoBatchWrapper(self.correction_encoder)
+        params = dict(single_example_encoder.named_parameters())
+        enc_fun = lambda x: functional_call(single_example_encoder, params, x)
+
+        def aux_fun1(x):
+            _, vjp_fun = vjp(enc_fun, x)
+            return vjp_fun(torch.tensor([1., 0.]))
+
+        aux_fun1 = vmap(vmap(aux_fun1))
+        grads1 = aux_fun1(x)[0]  # dimensions: (B, L, 2)
+
+        norms1 = torch.linalg.norm(grads1, dim=2) ** 2  # dimensions: (B, L)
+        vjp_loss1 = torch.mean((norms1 - 1) ** 2)
+
+        def aux_fun2(x):
+            _, vjp_fun = vjp(enc_fun, x)
+            return vjp_fun(torch.tensor([0., 1.]))
+
+        aux_fun2 = vmap(vmap(aux_fun2))
+        grads2 = aux_fun2(x)[0]  # dimensions: (B, L, 2)
+
+        norms2 = torch.linalg.norm(grads2, dim=2) ** 2  # dimensions: (B, L)
+        vjp_loss2 = torch.mean((norms2 - 1) ** 2)
+
+        vjp_loss = vjp_loss1 + vjp_loss2
+
+        return vjp_loss
+
+
+def perpendicular_segment(segment, eps):
+    # segment is represented by a tuple of two 2D points
+    # so dims should be (2, 2)
+    # Calculate midpoint of the segment
+    start, end = segment
+    midpoint = (start + end) / 2
+    d = end - start
+    perp = torch.tensor([[0, 1], [-1, 0]], dtype=torch.float32).to(d.device) @ d
+    perp /= torch.linalg.norm(perp)
+    perp *= eps
+    perp_segment = torch.stack([midpoint - perp, midpoint + perp], dim=0)
+    return perp_segment
+
+

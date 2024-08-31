@@ -1,10 +1,16 @@
 import os
+from abc import ABC, abstractmethod
 
 import torch
+import numpy as np
 from torch.utils.data import Dataset
 import networkx as nx
 import mdtraj as md
+from pytorch_lightning import seed_everything
+from torch_geometric.data import Data
+import trimesh
 
+from src.utils.geometry import rot_matrix_2d
 from src.manifolds.pointcloud import PointCloudManifold
 
 
@@ -90,7 +96,7 @@ class DijkstraGeodesicsDataset(BaseGeodesicsDataset):
                 if all(conds):
                     # print(f'Path length: {len(path)}')
                     assert len(path) == 2
-                    geodesic_xyz = ca_pos[path, :, :]
+                    geodesic_xyz = self.proteins[path, :, :]
                     all_geodesics.append(geodesic_xyz)
 
                     if len(path) == 3:
@@ -136,13 +142,215 @@ def prepare_data(struct, data_folder):
     return ca_pos
 
 
-if __name__ == '__main__':
-    seed = 42
-    batch_size = 4
+class PointCloudDataset(Dataset, ABC):
+    def __init__(self, n_points=1000, seed=42, center=False, **kwargs):
+        super().__init__()
+        assert n_points > 0, 'Number of points must be greater than 0'
+        self.n_points = n_points
+        seed_everything(seed)
+        points = self.generate_points()
+        self.points = points  # dimension (n_points, n_vertices, 2)
 
-    struct = 1
-    data_folder = os.path.join('../..', "data", "molecular_dynamics")
-    results_folder = 'results'
+        if center:
+            self.points -= self.points.mean(dim=1, keepdim=True)  # center each snapshot
 
-    ca_pos = prepare_data(struct, data_folder)
-    dataset = DijkstraGeodesicsDataset(ca_pos)
+    @abstractmethod
+    def generate_points(self):
+        pass
+
+    def __len__(self):
+        return self.n_points
+
+    def __getitem__(self, idx):
+        return self.points[idx]
+
+
+class VPC2DDataset(PointCloudDataset):
+    def __init__(self, starting_angle, ending_angle, **kwargs):
+        self.starting_angle = starting_angle
+        self.ending_angle = ending_angle
+        super().__init__(**kwargs)
+
+    def generate_points(self):
+        t = torch.linspace(self.starting_angle, self.ending_angle, self.n_points)
+        # points will be of dimension (n_points, n_vertices, 2)
+        #    / A
+        #  B
+        #    \ C
+        # intially we fix B = (0, 0) and C = (1, 0) and only move A
+        # we can then translate and rotate each snapshot because we will be using
+        # an equivariant model
+
+        As = torch.stack([torch.cos(t), torch.sin(t)], dim=1)  # (n_points, 2)
+        Bs = torch.stack([torch.zeros_like(t), torch.zeros_like(t)], dim=1)  # (n_points, 2)
+        Cs = torch.stack([torch.ones_like(t), torch.zeros_like(t)], dim=1)  # (n_points, 2)
+        return torch.stack([As, Bs, Cs], dim=1)
+
+
+class Bunny3DDataset(PointCloudDataset):
+    def __init__(self, bunny_path, **kwargs):
+        self.bunny_path = bunny_path
+        self.normals = None
+        super().__init__(**kwargs)
+
+    def generate_points(self):
+        mesh = trimesh.load('bunny.obj')
+        return mesh.vertices
+
+
+class GraphDataset(Dataset, ABC):
+    def __init__(self, n_graphs=1000, seed=42, center_pos=False, **kwargs):
+        super().__init__()
+        assert n_graphs > 0, 'Number of points must be greater than 0'
+        self.n_graphs = n_graphs
+        seed_everything(seed)
+        graphs = self.generate_graphs()
+        self.graphs = graphs  # dimension (n_points, n_vertices, 2)
+
+        if center_pos:
+            for i, graph in enumerate(self.graphs):
+                graph.pos -= graph.pos.mean(dim=0, keepdim=True)
+
+    @abstractmethod
+    def generate_graphs(self):
+        pass
+
+    def __len__(self):
+        return self.n_graphs
+
+    def __getitem__(self, idx):
+        return self.graphs[idx]
+
+
+class HingeAccordion2DDataset(GraphDataset):
+    def __init__(self, a, phi_start, phi_end, **kwargs):
+        if not isinstance(a, torch.Tensor):
+            a = torch.tensor(a)
+
+        if not isinstance(phi_start, torch.Tensor):
+            phi_start = torch.tensor(phi_start)
+
+        if not isinstance(phi_end, torch.Tensor):
+            phi_end = torch.tensor(phi_end)
+
+        assert phi_start.shape == phi_end.shape
+        assert len(phi_start.shape) == 1
+
+        assert len(a.shape) == 1
+        assert phi_start.shape[0] == a.shape[0] - 1
+
+        self.a = a
+        self.phi_start = phi_start
+        self.phi_end = phi_end
+
+        super().__init__(**kwargs)
+
+    def generate_graphs(self):
+        ts = []
+        t_start = self.phi_start
+        for i in range(self.phi_start.shape[0]):
+            phi_s = self.phi_start[i]
+            phi_e = self.phi_end[i]
+            num = self.n_graphs // self.phi_start.shape[0]
+            t = torch.linspace(phi_s, phi_e, num)[None]
+            phis = t_start.repeat(num, 1)
+            phis[:, i] = t
+            ts.append(phis)
+            t_start = t_start.clone()
+            t_start[i] = phi_e
+
+        t = torch.cat(ts, dim=0)
+
+        # common settings
+        n_nodes = self.a.shape[0] + 1
+        x = torch.ones(n_nodes, 1)
+
+        node_ids = list(range(n_nodes))
+        edge_index = torch.tensor([node_ids[:-1], node_ids[1:]], dtype=torch.long)
+
+        # generate graphs one by one
+        graphs = []
+        for phi in t:
+            pos = self.generate_accordion_graph(self.a, phi)
+            graph = Data(x=x, pos=pos, edge_index=edge_index)
+            graphs.append(graph)
+
+        return graphs
+
+    @staticmethod
+    def generate_accordion_graph(a, phi):
+        assert phi.shape[0] == a.shape[0] - 1
+        xs = [torch.zeros(2), torch.tensor([a[0], 0])]  # first 2 vertices
+
+        for i, (aa, pp) in enumerate(zip(a[1:], phi)):
+            pp_true = torch.pi * (1 - pp) if i % 2 == 0 else torch.pi * (1 + pp)
+            rot = rot_matrix_2d(pp_true)
+
+            src = xs[-1]
+            dir = src - xs[-2]
+            dir /= torch.linalg.norm(dir)
+            new_x = src + aa * rot @ dir
+            xs.append(new_x)
+
+        return torch.stack(xs)
+
+
+class Accordion2DDataset(GraphDataset):
+    def __init__(self, a, phi_start, phi_end, **kwargs):
+        if not isinstance(a, torch.Tensor):
+            a = torch.tensor(a)
+
+        if not isinstance(phi_start, torch.Tensor):
+            phi_start = torch.tensor(phi_start)
+
+        if not isinstance(phi_end, torch.Tensor):
+            phi_end = torch.tensor(phi_end)
+
+        assert phi_start.shape == phi_end.shape
+        assert len(phi_start.shape) == 1
+
+        assert len(a.shape) == 1
+        assert phi_start.shape[0] == a.shape[0] - 1
+
+        self.a = a
+        self.phi_start = phi_start
+        self.phi_end = phi_end
+        super().__init__(**kwargs)
+
+    def generate_graphs(self):
+        t = np.linspace(self.phi_start, self.phi_end, num=self.n_graphs)
+        t = torch.from_numpy(t)
+
+        # common settings
+        n_nodes = self.a.shape[0] + 1
+        x = torch.ones(n_nodes, 1)
+
+        node_ids = list(range(n_nodes))
+        edge_index = torch.tensor([node_ids[:-1], node_ids[1:]], dtype=torch.long)
+
+        # generate graphs one by one
+        graphs = []
+        for i in range(self.n_graphs):
+            phi = t[i]
+            pos = self.generate_accordion_graph(self.a, phi)
+            graph = Data(x=x, pos=pos, edge_index=edge_index)
+            graphs.append(graph)
+
+        return graphs
+
+    @staticmethod
+    def generate_accordion_graph(a, phi):
+        assert phi.shape[0] == a.shape[0] - 1
+        xs = [torch.zeros(2), torch.tensor([a[0], 0])]  # first 2 vertices
+
+        for i, (aa, pp) in enumerate(zip(a[1:], phi)):
+            pp_true = torch.pi * (1 - pp) if i % 2 == 0 else np.pi * (1 + pp)
+            rot = rot_matrix_2d(pp_true)
+
+            src = xs[-1]
+            dir = src - xs[-2]
+            dir /= torch.linalg.norm(dir)
+            new_x = src + aa * rot @ dir
+            xs.append(new_x)
+
+        return torch.stack(xs)

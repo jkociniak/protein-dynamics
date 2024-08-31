@@ -95,3 +95,16 @@ class DijkstraGeodesicsDataset(BaseGeodesicsDataset):
                 visited_pairs.add((src, tgt))
 
         return geodesics
+
+
+class FullTrajectoryGraphDataset(torch.utils.data.Dataset):
+    def __init__(self, base_dataset):
+        super().__init__()
+        self.base_dataset = base_dataset
+
+    def __len__(self):
+        return 1
+
+    def __getitem__(self, idx):
+        x = self.base_dataset.graphs
+        return x

@@ -1,13 +1,15 @@
 import os
 import numpy as np
+from abc import ABC, abstractmethod
+from tqdm import tqdm
 
 import torch
 import pytorch_lightning as pl
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
-from ..datasets.base import BaseGeodesicsDataset
-
+from src.utils.tensor import gradients
+from src.datasets.euclidean import MNISTPCADataset
 
 class MonitorCorrectionCoeff(pl.Callback):
     def __init__(self):
@@ -21,22 +23,23 @@ class MonitorCorrectionCoeff(pl.Callback):
 
 class ScheduleNegSamplesEps(pl.Callback):
     # to work with EnvelopeRegularizer
-    def __init__(self, freq=1, factor=0.8):
+    def __init__(self, freq=1, factor=0.8, min_eps=1e-1):
         super().__init__()
         self.freq = freq
         self.factor = factor
+        self.min_eps = min_eps
 
     def on_train_epoch_start(self, trainer, pl_module):
         if trainer.current_epoch == 0:
-            print(f'Initial neg samples epsilon: {pl_module.neg_samples_eps}')
+            print(f'Initial neg samples epsilon: {pl_module.loss.params["non_manifold_eps"]}')
             return
 
         if trainer.current_epoch % self.freq != 0:
             return
 
-        new_eps = pl_module.neg_samples_eps * self.factor
-        print(f'Updating neg samples epsilon from {pl_module.neg_samples_eps:04f} to {new_eps:04f}')
-        pl_module.neg_samples_eps = new_eps
+        new_eps = max(pl_module.loss.params['non_manifold_eps'] * self.factor, self.min_eps)
+        print(f'Updating non manifold sample generation epsilon from {pl_module.loss.params["non_manifold_eps"]:04f} to {new_eps:04f}')
+        pl_module.loss.params['non_manifold_eps'] = new_eps
 
 
 class InspectGradients(pl.Callback):
@@ -64,6 +67,16 @@ class InspectGradients(pl.Callback):
         ave_grads = []
         max_grads = []
         layers = []
+        print('BEFORE CLIPPING')
+        for n, p in pl_module.named_parameters():
+            if p.requires_grad and ("bias" not in n):
+                layers.append(n)
+                ave_grads.append(p.grad.abs().mean())
+                max_grads.append(p.grad.abs().max())
+                print(f'[{n}] ave_grad: {p.grad.abs().mean()}, max_grad: {p.grad.abs().max()}')
+        torch.nn.utils.clip_grad_norm(pl_module.encoder.parameters(), 1.0)
+
+        print('AFTER CLIPPING')
         for n, p in pl_module.named_parameters():
             if p.requires_grad and ("bias" not in n):
                 layers.append(n)
@@ -87,272 +100,271 @@ class InspectGradients(pl.Callback):
                         Line2D([0], [0], color="b", lw=4),
                         Line2D([0], [0], color="k", lw=4)], ['max-gradient', 'mean-gradient', 'zero-gradient'])
 
-            plt.savefig(os.path.join(self.save_dir, f'{self.base_name}_{trainer.global_step}.png'))
+            if self.save_dir is None:
+                plt.show()
+            else:
+                plt.savefig(os.path.join(self.save_dir, f'{self.base_name}_{trainer.global_step}.png'))
+
             plt.close()
 
 
-class PlotPrelogs(pl.Callback):
-    def __init__(self, dataset, start_epoch=0, freq=10, density=30, eps=0.5, target=None):
+class MyLogger(pl.Callback, ABC):
+    """ Abstract class for logging, able to save arbitrary metrics, tensors, and figures."""
+    def __init__(self, start_epoch=0, freq=10):
         super().__init__()
         self.start_epoch = start_epoch
         self.freq = freq
-        self.density = density
-        self.eps = eps
-
-        self.points = dataset.points
-        self.dim = dataset.points.shape[1]
-        assert self.dim in [2, 3], "Only 2D and 3D points are supported"
-
-        assert isinstance(target, (type(None), torch.Tensor)), "Target must be a tensor or None"
-        self.target = target
-        if self.target is not None:
-            assert self.target.shape[0] == dataset.points.shape[1], "Target must have the same dimension as the points"
-
-        if self.dim == 2:
-            x, y, target = self.get_mesh(dataset.points)
-            self.x = x
-            self.y = y
-            self.target = target
-        else:
-            x, y, z, target = self.get_mesh(dataset.points)
-            self.x = x
-            self.y = y
-            self.z = z
-            self.target = target
-
-    def get_mesh(self, points):
-        # points should be L x D tensor
-        if points.shape[1] == 2:
-            x = torch.linspace(points[:, 0].min() - self.eps, points[:, 0].max() + self.eps, self.density)
-            y = torch.linspace(points[:, 1].min() - self.eps, points[:, 1].max() + self.eps, self.density)
-            if self.target is None:
-                target = points[-1, :].reshape(-1, 1, 2)
-            else:
-                target = self.target
-            return x, y, target
-        elif points.shape[1] == 3:
-            x = torch.linspace(points[:, 0].min() - self.eps, points[:, 0].max() + self.eps, self.density)
-            y = torch.linspace(points[:, 1].min() - self.eps, points[:, 1].max() + self.eps, self.density)
-            z = torch.linspace(points[:, 2].min() - self.eps, points[:, 2].max() + self.eps, self.density)
-            if self.target is None:
-                target = points[-1, :].reshape(-1, 1, 3)
-            else:
-                target = self.target
-            return x, y, z, target
-        else:
-            raise ValueError("Only 2D and 3D points are supported")
 
     def on_train_epoch_end(self, trainer, pl_module):
         if trainer.current_epoch < self.start_epoch:
             return
 
-        if trainer.current_epoch % self.freq != 0:
+        if (trainer.current_epoch + 1) % self.freq != 0:
             return
 
-        if self.dim == 2:
-            self.plot_prelogs_2D(trainer, pl_module)
-        elif self.dim == 3:
-            self.plot_prelogs_3D(trainer, pl_module)
-        else:
-            raise ValueError("Only 2D and 3D points are supported")
-
-    def plot_prelogs_2D(self, trainer, pl_module):
-        xv, yv = np.meshgrid(self.x, self.y)
-        xy = np.vstack([xv.ravel(), yv.ravel()]).T
-        ps = torch.from_numpy(xy[None])
-
-        ps = ps.to(pl_module.device)
-        self.target = self.target.to(pl_module.device)
-
-        with torch.no_grad():
-            total_prelogs, _, _, _, = pl_module.corrected_manifold.prelog(ps.float(), self.target.float())
-            total_prelogs = total_prelogs.squeeze([0, 2]).detach().cpu().numpy()
-
-        # initialize figure with only one ax
-        fig, ax = plt.subplots(1, 1, figsize=(10, 10), dpi=50)
-
-        # # plot base prelogs
-        # base_prelogs_x = base_prelogs[:, 0].detach().numpy()
-        # base_prelogs_y = base_prelogs[:, 1].detach().numpy()
-        # ax.quiver(xv, yv, base_prelogs_x, base_prelogs_y, width=0.002, color='green', label='Base prelogs', alpha=0.3)
-        #
-        # plot correction prelogs
-        # corr_prelogs_x = correction_prelogs[:, 0].detach().numpy()
-        # corr_prelogs_y = correction_prelogs[:, 1].detach().numpy()
-        # ax[0].quiver(xv, yv, corr_prelogs_x, corr_prelogs_y, width=0.002, color='red', label='Correction prelogs')
-
-        ax.plot(self.points[:, 0], self.points[:, 1], label='True', color='black', alpha=0.5)
-        # plot total prelogs
-        total_prelogs_x = total_prelogs[:, 0]
-        total_prelogs_y = total_prelogs[:, 1]
-        ax.quiver(xv, yv, total_prelogs_x, total_prelogs_y, width=0.002, color='blue', label='Distance grads')
-
-        # enable legend
-        ax.legend()
-
-        # upload to tensorboard
         assert isinstance(trainer.logger, pl.loggers.TensorBoardLogger)  # make sure we are using tensorboard
-        trainer.logger.experiment.add_figure('Prelogs', fig, global_step=trainer.global_step)
-        plt.close(fig)
 
-    def plot_prelogs_3D(self, trainer, pl_module):
-        xv, yv, zv = np.meshgrid(self.x, self.y, self.z)
-        xyz = np.vstack([xv.ravel(), yv.ravel(), zv.ravel()]).T
-        ps = torch.from_numpy(xyz[None]).float()
-        target = self.target.float()[None, None]
+        #pl_module.manifold.eval()
+        figs, metrics, tensors = self.plot(pl_module.manifold, current_epoch=trainer.current_epoch)
+        #pl_module.manifold.train()
 
-        total_prelogs, _, _, _, = pl_module.corrected_manifold.prelog(ps, target)
-        total_prelogs = total_prelogs.squeeze([0, 2, 3])
+        for name, metric in metrics.items():
+            trainer.logger.experiment.add_scalar(name, metric, global_step=trainer.global_step)
 
-        # initialize figure with only one ax
-        fig = plt.figure(figsize=(10, 10), dpi=50)
-        ax = fig.add_subplot(111, projection='3d')
+        for name, fig in figs.items():
+            trainer.logger.experiment.add_figure(name, fig, global_step=trainer.global_step)
+            plt.close(fig)
 
-        # plot total prelogs
-        total_prelogs = total_prelogs.detach().numpy()
-        ax.quiver(xv.ravel(), yv.ravel(), zv.ravel(),
-                  total_prelogs[:, 0], total_prelogs[:, 1], total_prelogs[:, 2],
-                  normalize=True, length=0.2, color='blue', label='Distance grads')
+        log_dir = trainer.logger.log_dir
+        tensors_dir = os.path.join(log_dir, f'{trainer.current_epoch}')
+        # create a directory named current_epoch to save the tensors
+        if tensors is not None:
+            os.makedirs(tensors_dir, exist_ok=True)
 
-        # enable legend
-        ax.legend()
+        for name, tensor in tensors.items():
+            tensor_path = os.path.join(tensors_dir, f'{name}.pt')
+            torch.save(tensor, tensor_path)
 
-        # upload to tensorboard
-        assert isinstance(trainer.logger, pl.loggers.TensorBoardLogger)
-        trainer.logger.experiment.add_figure('Prelogs', fig, global_step=trainer.global_step)
-        plt.close(fig)
+    @abstractmethod
+    def plot(self, manifold, **kwargs) -> tuple:
+        # should return figs, metrics, tensors
+        # figs and metrics will be uploaded to tensorboard
+        # tensors will be saved in the logdir, in the folder named after the current epoch
+        pass
 
 
-class PlotGeodesics(pl.Callback):
-    def __init__(self, dataset, start_epoch=0, freq=10, n_interps=21, window_size=200, plot_negative_samples=False):
-        super().__init__()
-        self.start_epoch = start_epoch
-        self.freq = freq
+class GeneralLogger(MyLogger):
+    """ Callbacks usable for 2-dimensional data."""
 
+    def __init__(self, dataset, interp_params=None, **kwargs):
+        super().__init__(**kwargs)
         self.dataset = dataset
-        self.n_points = len(dataset)
+        self.points = dataset.points
 
-        self.n_interps = n_interps
-        self.window_size = window_size
+        if interp_params is None:
+            interp_params = {
+                'starting_idx': 5,
+                'ending_idx': 95,
+                'n_interps': 90,
+                'rgd_params': dict(print_iterations=False, max_iter=500, step_size=0.1, tol=1e-4)
+            }
+        self.interp_params = interp_params
 
+    def on_train_start(self, trainer, pl_module):
+        assert isinstance(trainer.logger, pl.loggers.TensorBoardLogger)  # make sure we are using tensorboard
+        log_dir = trainer.logger.log_dir
 
-        # we will plot predicted geodesics for window size, sliding by window size,
-        # so we need to define appropriate list of colors for each window
-        # the colors will change gradually from red to blue
-        first_color = np.array([1, 0, 0])
-        last_color = np.array([0, 0, 1])
-        n_windows = self.n_points // window_size
-        self.colors = np.linspace(first_color, last_color, n_windows)
+        gt_path = os.path.join(log_dir, f'gt.pt')
+        torch.save(self.points, gt_path)
 
-        assert isinstance(plot_negative_samples, bool)
-        self.negative_samples = plot_negative_samples
+        # base_preds = self.compute_interps(pl_module.manifold.base_manifold, self.points, **self.interp_params, use_rgd=False)
+        # bp_path = os.path.join(log_dir, f'base_preds.pt')
+        # torch.save(base_preds, bp_path)
 
-    def on_train_epoch_end(self, trainer, pl_module):
-        # we want to run callback every 10th epoch
-        if trainer.current_epoch < self.start_epoch:
-            return
+    def plot(self, manifold, **kwargs):
+        figs = {}
+        metrics = {}
+        tensors = {}
 
-        if trainer.current_epoch % self.freq != 0:
-            return
+        # preds = self.compute_interps(manifold, self.points, **self.interp_params)
+        # tensors['preds'] = preds
 
-        old_device = pl_module.device
-        pl_module.to('cpu')
+        # preds_local = self.compute_interps_local(manifold)
+        # tensors['preds_local'] = preds_local
 
-        def plot_geodesic(ax, i, j, color):
-            p0 = self.dataset.points[i][None, None]
-            assert p0.shape[-1] in [2, 3], "Only 2D and 3D points are supported"
-            p1 = self.dataset.points[j - 1][None, None]
+        # encoder_vals = self.compute_level_set(manifold, self.points)
+        # tensors['encoder_vals'] = encoder_vals
 
-            ts = torch.linspace(0, 1, self.n_interps)
-            preds = torch.zeros(self.n_interps, p0.shape[-1])
-            for i, t in enumerate(ts):
-                t = torch.tensor([t], dtype=torch.float32)
-                preds[i] = pl_module.corrected_manifold.geodesic(p0, p1, t).squeeze()
+        # logs_mesh = self.compute_logs(manifold, self.points, use_mesh=True)
+        # tensors['logs'] = logs_mesh
 
-            preds = preds.detach().unbind(dim=1)
-            ax.scatter(*preds, s=8, label='predicted', color=color)
+        # grads = self.compute_encoder_grads(manifold, self.points)
+        # tensors['grads'] = grads
 
-        pts = self.dataset.points.unbind(dim=1)
-        assert len(pts) in [2, 3], "Only 2D and 3D points are supported"
+        # eigenvalues = self.compute_eigenvalues(manifold, self.points)
+        # tensors['eigv'] = eigenvalues
+        #
+        # logs_traj = self.compute_logs(manifold, self.points)
+        # tensors['logs_traj'] = logs_traj
 
-        # initialize figure with two axes
-        projection = '3d' if len(pts) == 3 else None
-        fig = plt.figure(figsize=(24, 10), dpi=50)
-        ax = [fig.add_subplot(1, 2, i + 1, projection=projection) for i in range(2)]
-
-        # 1. partial geodesics (+ negative samples optionally)
-        ax[0].plot(*pts, label='true', color='black', alpha=0.5)
-        for i in range(0, self.n_points, self.window_size):
-            color = self.colors[i // self.window_size]
-            j = min(i + self.window_size, self.n_points)
-            plot_geodesic(ax[0], i, j, color)
-        ax[0].legend()
-
-        # 2. full geodesic
-        ax[1].plot(*pts, label='true', color='black', alpha=0.5)
-        plot_geodesic(ax[1], 0, self.n_points, 'blue')
-        ax[1].legend()
-
-        pl_module.to(old_device)
-
-        # upload to tensorboard
-        assert isinstance(trainer.logger, pl.loggers.TensorBoardLogger)
-        trainer.logger.experiment.add_figure('Geodesics', fig, global_step=trainer.global_step)
-        plt.close(fig)
+        return figs, metrics, tensors
 
 
-class PlotGeodesicsDataset(pl.Callback):
-    def __init__(self, dataset: BaseGeodesicsDataset, start_epoch=0, freq=10, max_geodesics=10):
-        super().__init__()
-        self.start_epoch = start_epoch
-        self.freq = freq
-        self.max_geodesics = max_geodesics
+    def compute_interps_local(self, manifold):
+        # works only for sequences
+        assert (self.interp_params['ending_idx'] - self.interp_params['starting_idx']) == 90
+        preds_local = torch.zeros(3, 30, self.points.shape[-1])
+        # divide into three equal parts
+        x1 = 5
+        x2 = 35
+        x3 = 65
+        x4 = 95
+        intervals = [(x1, x2), (x2, x3), (x3, x4)]
+        for i, (s, e) in enumerate(intervals):
+            interp_params = self.interp_params.copy()
+            interp_params['starting_idx'] = s
+            interp_params['ending_idx'] = e
+            interp_params['n_interps'] = 30
+            preds_local[i] = self.compute_interps(manifold, self.points, **interp_params)
 
-        self.dataset = dataset
-        self.n_points = len(dataset)
+        return preds_local
 
-        # we will plot predicted geodesics for window size, sliding by window size,
-        # so we need to define appropriate list of colors for each window
-        # the colors will change gradually from red to blue
-        # first_color = np.array([1, 0, 0])
-        # last_color = np.array([0, 0, 1])
-        # n_windows = self.n_points // window_size
-        # self.colors = np.linspace(first_color, last_color, n_windows)
+    @staticmethod
+    def get_mesh_2d(traj, eps, density):
+        x_ticks = torch.linspace(traj[:, 0].min() - eps, traj[:, 0].max() + eps, density)
+        y_ticks = torch.linspace(traj[:, 1].min() - eps, traj[:, 1].max() + eps, density)
+        xv, yv = np.meshgrid(x_ticks, y_ticks)
+        x, y = xv.ravel(), yv.ravel()
+        xy = np.vstack([x, y]).T
+        xy = torch.from_numpy(xy)
+        return xy
 
-    def on_train_epoch_end(self, trainer, pl_module):
-        # we want to run callback every 10th epoch
-        if trainer.current_epoch < self.start_epoch:
-            return
+    @staticmethod
+    def get_mesh_3d(traj, eps, density):
+        x_ticks = torch.linspace(traj[:, 0].min() - eps, traj[:, 0].max() + eps, density)
+        y_ticks = torch.linspace(traj[:, 1].min() - eps, traj[:, 1].max() + eps, density)
+        z_ticks = torch.linspace(traj[:, 2].min() - eps, traj[:, 2].max() + eps, density)
+        xv, yv, zv = np.meshgrid(x_ticks, y_ticks, z_ticks)
+        x, y, z = xv.ravel(), yv.ravel(), zv.ravel()
+        xyz = np.vstack([x, y, z]).T
+        xyz = torch.from_numpy(xyz)
+        return xyz
 
-        if trainer.current_epoch % self.freq != 0:
-            return
+    @staticmethod
+    def compute_interps(manifold, pts, starting_idx, ending_idx, n_interps, rgd_params, use_rgd=True):
+        p0 = pts[starting_idx][None, None]
+        p1 = pts[ending_idx - 1][None, None]
 
-        # initialize figure with two axes
-        # initialize figure with only one ax
-        fig = plt.figure(figsize=(10, 10), dpi=50)
-        ax = fig.add_subplot(111, projection='3d')
+        ts = torch.linspace(0, 1, n_interps)
+        preds = torch.zeros(n_interps, p0.shape[-1])
 
-        for i in range(len(self.dataset.geodesics)):
-            if i == self.max_geodesics:
-                break
-            geodesic = self.dataset.geodesics[i]
-            ax.plot(geodesic[:, 0], geodesic[:, 1], geodesic[:, 2], label='true', color='black', alpha=0.5)
+        manifold.eval()
+        for i, t in tqdm(enumerate(ts),
+                         desc='Calculating interpolations',
+                         total=n_interps):
+            t = torch.tensor([t], dtype=torch.float32)
+            if use_rgd:
+                preds[i] = manifold.geodesic(p0, p1, t, **rgd_params).squeeze()
+            else:
+                # this is for Euclidean manifold
+                preds[i] = manifold.geodesic(p0, p1, t).squeeze()
+        manifold.train()
 
-            p0 = geodesic[0][None, None]
-            p1 = geodesic[-1][None, None]
-            n_interps = len(geodesic)
-            ts = torch.linspace(0, 1, n_interps)
-            preds = torch.zeros(n_interps, p0.shape[-1])
+        return preds
 
-            for j, t in enumerate(ts):
-                preds[j] = pl_module.corrected_manifold.geodesic(p0, p1, torch.tensor([t])).squeeze()
+    @staticmethod
+    def compute_level_set(manifold, pts):
+        if pts.shape[-1] == 2:
+            mesh = GeneralLogger.get_mesh_2d(pts, 0.1, 100)
+        elif pts.shape[-1] == 3:
+            mesh = GeneralLogger.get_mesh_3d(pts, 0.1, 30)
+        else:
+            raise ValueError('Only 2D and 3D data is supported')
 
-            preds = [p.numpy() for p in preds.detach().unbind(dim=1)]
-            color = np.random.rand(3, )
-            ax.scatter(*preds, s=8, label='predicted', color=color)
+        enc, coords = manifold.correction_encoder(mesh[None])
 
-        ax.view_init(30, 30)
+        if pts.shape[-1] == 2:
+            enc = enc.reshape(100, 100).detach().numpy()
+        elif pts.shape[-1] == 3:
+            enc = enc.reshape(30, 30, 30, 2).detach().numpy()
+        else:
+            raise ValueError('Only 2D and 3D data is supported')
+        return enc
 
-        # upload to tensorboard
-        assert isinstance(trainer.logger, pl.loggers.TensorBoardLogger)
-        trainer.logger.experiment.add_figure('Geodesics', fig, global_step=trainer.global_step)
+    @staticmethod
+    def compute_encoder_grads(manifold, pts):
+        enc, coords = manifold.correction_encoder(pts[None])
+        grads = gradients(enc, coords)
+        grads = grads.squeeze(0, 2).detach().cpu()
+        return grads
+
+    @staticmethod
+    def compute_logs(manifold, pts, ending_idx=-1, use_mesh=False):
+        if use_mesh:
+            if pts.shape[-1] == 2:
+                x = GeneralLogger.get_mesh_2d(pts, 0.1, 30)[None]
+            elif pts.shape[-1] == 3:
+                x = GeneralLogger.get_mesh_3d(pts, 0.1, 10)[None]
+            else:
+                raise ValueError('Only 2D and 3D data is supported')
+        else:
+            x = pts[None]
+        target = pts[ending_idx][None, None]
+        logs = manifold.log(x, target)
+        logs = logs.squeeze(0, 2).detach().cpu()
+        return logs
+
+    @staticmethod
+    def compute_eigenvalues(manifold, pts):
+        total_mt, base_mt, corr_mt = manifold.metric_tensor(pts[None], debug=True)
+        (eigenvalues) = np.linalg.eigh(corr_mt.detach())
+        return eigenvalues
+
+
+class MNISTLogger(GeneralLogger):
+    def __init__(self, dataset, **kwargs):
+        assert isinstance(dataset, MNISTPCADataset)
+        super().__init__(dataset, **kwargs)
+        sorted_indices = sorted(range(self.dataset.indices.shape[0]), key=lambda i: self.dataset.labels[i])
+        self.sorted_indices = sorted_indices
+
+    def plot(self, manifold, **kwargs):
+        figs = {}
+        metrics = {}
+        tensors = {}
+
+        # Draw the distance matrix
+        figs['distance_matrix_comp'] = self.draw_distance_matrix_comp(manifold)
+
+        return figs, metrics, tensors
+
+    def draw_distance_matrix_comp(self, manifold):
+        pts = self.dataset.points[self.sorted_indices]
+        if self.dataset.n_components is None:
+            k = pts.shape[1]
+        else:
+            k = self.dataset.n_components
+        distance_matrix = torch.linalg.vector_norm(pts[:, None, :] - pts[None, :, :], ord=2, dim=-1)
+        corr_distance_matrix = manifold.pairwise_distance(pts[None], pts[None]).squeeze().detach()
+
+        # Create a figure and axis
+        fig, ax = plt.subplots(1, 2, figsize=(10, 4))
+
+        self.plot_heatmap(ax[0], distance_matrix, f'L2 Distance Matrix (first {k} PCA components)')
+        self.plot_heatmap(ax[1], corr_distance_matrix, f'Corrected Distance Matrix')
+
+        return fig
+
+    @staticmethod
+    def plot_heatmap(ax, mat, title):
+        # Plot the distance matrix
+        im = ax.imshow(mat, cmap='viridis')
+
+        # Add colorbar
+        cbar = ax.figure.colorbar(im, ax=ax)
+        cbar.ax.set_ylabel('Distance', rotation=-90, va="bottom")
+
+        # Set labels and title
+        ax.set_xlabel('Point Index')
+        ax.set_ylabel('Point Index')
+        ax.set_title(title)

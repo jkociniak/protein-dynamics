@@ -1,0 +1,65 @@
+dataset:
+      _target_: src.datasets.pointcloud.Accordion2DDataset
+      n_graphs: 100
+      a: [1., 1., 1., 1., 1.]
+      phi_start: [0.1, 0.1, 0.1, 0.1]
+      phi_end: [0.3, 0.3, 0.3, 0.3]
+      center_pos: False
+      seed: 42
+
+encoder:
+      _target_: src.models.ponita.MyPonita
+      in_channels: 1
+      out_channels: 5,
+      hidden_features: 256
+      hidden_layers: 3
+
+corrected_manifold:
+      _target_: src.manifolds.euclidean.L2CorrectedEuclideanManifold
+      d: 3
+      alpha: 1e-4
+      beta: 1.
+
+loss:
+      weights:
+            manifold_norm: 3000.
+            manifold_eikonal: 200.
+            manifold_div: 0.
+            non_manifold_norm: 0.
+            non_manifold_eikonal: 200.
+            non_manifold_div: 0.
+            geodesic: 0.
+            orthogonal: 10.
+      params:
+            non_manifold_alpha: 1.
+            non_manifold_eps: 0.1
+
+training_params:
+      seed: 42
+      batch_size: 2048
+      max_epochs: 20000
+      accelerator: cpu
+      devices: 1
+      trainer_root_dir: null
+      ckpt_path: null
+      log_dir: lightning_logs
+      name: default
+
+
+plotter:
+      _target_: src.utils.plotting.Plotter3D
+      start_epoch: 0
+      freq: 100
+      geodesic_plot_params:
+            enable: True
+            starting_idx: 30
+            ending_idx: 50
+            n_interps: 21
+            rgd_params:
+                  debug: False
+                  max_iter: 500
+                  step_size: 0.1
+      dist_grad_params:
+            enable: False
+            mesh_eps: 0.5
+            mesh_density: 20
