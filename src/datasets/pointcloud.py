@@ -10,7 +10,7 @@ from pytorch_lightning import seed_everything
 from torch_geometric.data import Data
 import trimesh
 
-from src.utils.geometry import rot_matrix_2d
+from src.utils.tensor import rot_matrix_2d
 from src.manifolds.pointcloud import PointCloudManifold
 
 

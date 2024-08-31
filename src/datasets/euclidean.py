@@ -10,7 +10,7 @@ from sklearn.decomposition import PCA
 from scipy.stats import special_ortho_group
 from pytorch_lightning import seed_everything
 
-from src.utils.geometry import rot_matrix_2d
+from src.utils.tensor import rot_matrix_2d
 
 from .base import BaseGeodesicsDataset
 

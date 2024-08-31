@@ -78,7 +78,7 @@ class InspectGradients(pl.Callback):
             plt.close()
 
 
-class MyLogger(pl.Callback, ABC):
+class MyTensorBoardLogger(pl.Callback, ABC):
     """ Abstract class for logging, able to save arbitrary metrics, tensors, and figures."""
     def __init__(self, start_epoch=0, freq=10):
         super().__init__()
@@ -123,7 +123,7 @@ class MyLogger(pl.Callback, ABC):
         pass
 
 
-class GeneralLogger(MyLogger, ABC):
+class GeneralLogger(MyTensorBoardLogger, ABC):
     def __init__(self, dataset, **kwargs):
         super().__init__(**kwargs)
         self.dataset = dataset
