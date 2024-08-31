@@ -1,0 +1,44 @@
+# @package _global_
+
+defaults:
+      - override /dataset: 2d/spiral100
+      - override /encoder: sinusoidal/fourier_s0.5_siren_w10.0
+      - override /loss: arch_comparison_2d
+
+hydra:
+  sweeper:
+    params:
+      encoder: [relu/fourier_s0.5_relu,
+                relu/fourier_s0.5_siren_w10.0_relu,
+                relu/fourier_s0.7_relu,
+                relu/fourier_s0.7_siren_w10.0_relu,
+                relu/siren_w10.0_relu,
+                relu/siren_w10.0_siren_w10.0_relu]
+
+corrected_manifold:
+      _target_: src.manifolds.euclidean.L2CorrectedEuclideanManifold
+      base_manifold_params:
+            d: 2
+      alpha: 1e-4
+      beta: 1.
+
+optimizer:
+      _target_: torch.optim.Adam
+      lr: 1e-5
+      weight_decay: 0.
+
+training_params:
+      seed: 42
+      batch_size: 100
+      max_epochs: 800
+      accelerator: cpu
+      devices: 1
+      trainer_root_dir: null
+      ckpt_path: null
+      log_dir: lightning_logs
+      name: hybrid_networks_comp
+
+plotter:
+      _target_: src.utils.callbacks.SineExperimentsLogger
+      start_epoch: 0
+      freq: 800

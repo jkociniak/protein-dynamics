@@ -1,15 +1,24 @@
 # @package _global_
 
 defaults:
-      - override /dataset: spiral100
-      - override /encoder: fourier_s0.5_relu
-      - override /loss: arch_comparison_2d
+      - override /dataset: 3d/osc_helix100
+      - override /encoder: relu/fourier_s0.5_relu
+      - override /loss: helix_3d
 
+hydra:
+  sweeper:
+    params:
+      encoder: [relu/fourier_s0.5_relu,
+                relu/siren_w10.0_relu]
+
+encoder:
+      in_features: 3
+      out_features: 2
 
 corrected_manifold:
       _target_: src.manifolds.euclidean.L2CorrectedEuclideanManifold
       base_manifold_params:
-            d: 2
+            d: 3
       alpha: 1e-4
       beta: 1.
 
@@ -21,15 +30,15 @@ optimizer:
 training_params:
       seed: 42
       batch_size: 100
-      max_epochs: 800
+      max_epochs: 1500
       accelerator: cpu
       devices: 1
       trainer_root_dir: null
       ckpt_path: null
       log_dir: lightning_logs
-      name: arch_comparison_2d_archcomp2
+      name: helix_3d_fullsize
 
 plotter:
-      _target_: src.utils.plotting.Plotter2D
+      _target_: src.utils.callbacks.SineExperimentsLogger
       start_epoch: 0
-      freq: 800
+      freq: 1500

@@ -11,36 +11,6 @@ from matplotlib.lines import Line2D
 from src.utils.tensor import gradients
 from src.datasets.euclidean import MNISTPCADataset
 
-class MonitorCorrectionCoeff(pl.Callback):
-    def __init__(self):
-        super().__init__()
-
-    def on_train_epoch_start(self, trainer, pl_module):
-        coeff = pl_module.corrected_manifold.beta.data
-        assert isinstance(trainer.logger, pl.loggers.TensorBoardLogger)  # make sure we are using tensorboard
-        trainer.logger.experiment.add_scalar('correction_coeff', coeff, global_step=trainer.global_step)
-
-
-class ScheduleNegSamplesEps(pl.Callback):
-    # to work with EnvelopeRegularizer
-    def __init__(self, freq=1, factor=0.8, min_eps=1e-1):
-        super().__init__()
-        self.freq = freq
-        self.factor = factor
-        self.min_eps = min_eps
-
-    def on_train_epoch_start(self, trainer, pl_module):
-        if trainer.current_epoch == 0:
-            print(f'Initial neg samples epsilon: {pl_module.loss.params["non_manifold_eps"]}')
-            return
-
-        if trainer.current_epoch % self.freq != 0:
-            return
-
-        new_eps = max(pl_module.loss.params['non_manifold_eps'] * self.factor, self.min_eps)
-        print(f'Updating non manifold sample generation epsilon from {pl_module.loss.params["non_manifold_eps"]:04f} to {new_eps:04f}')
-        pl_module.loss.params['non_manifold_eps'] = new_eps
-
 
 class InspectGradients(pl.Callback):
     def __init__(self, save_dir, base_name, enable_plotting=True, freq=1):
@@ -153,81 +123,11 @@ class MyLogger(pl.Callback, ABC):
         pass
 
 
-class GeneralLogger(MyLogger):
-    """ Callbacks usable for 2-dimensional data."""
-
-    def __init__(self, dataset, interp_params=None, **kwargs):
+class GeneralLogger(MyLogger, ABC):
+    def __init__(self, dataset, **kwargs):
         super().__init__(**kwargs)
         self.dataset = dataset
         self.points = dataset.points
-
-        if interp_params is None:
-            interp_params = {
-                'starting_idx': 5,
-                'ending_idx': 95,
-                'n_interps': 90,
-                'rgd_params': dict(print_iterations=False, max_iter=500, step_size=0.1, tol=1e-4)
-            }
-        self.interp_params = interp_params
-
-    def on_train_start(self, trainer, pl_module):
-        assert isinstance(trainer.logger, pl.loggers.TensorBoardLogger)  # make sure we are using tensorboard
-        log_dir = trainer.logger.log_dir
-
-        gt_path = os.path.join(log_dir, f'gt.pt')
-        torch.save(self.points, gt_path)
-
-        # base_preds = self.compute_interps(pl_module.manifold.base_manifold, self.points, **self.interp_params, use_rgd=False)
-        # bp_path = os.path.join(log_dir, f'base_preds.pt')
-        # torch.save(base_preds, bp_path)
-
-    def plot(self, manifold, **kwargs):
-        figs = {}
-        metrics = {}
-        tensors = {}
-
-        # preds = self.compute_interps(manifold, self.points, **self.interp_params)
-        # tensors['preds'] = preds
-
-        # preds_local = self.compute_interps_local(manifold)
-        # tensors['preds_local'] = preds_local
-
-        # encoder_vals = self.compute_level_set(manifold, self.points)
-        # tensors['encoder_vals'] = encoder_vals
-
-        # logs_mesh = self.compute_logs(manifold, self.points, use_mesh=True)
-        # tensors['logs'] = logs_mesh
-
-        # grads = self.compute_encoder_grads(manifold, self.points)
-        # tensors['grads'] = grads
-
-        # eigenvalues = self.compute_eigenvalues(manifold, self.points)
-        # tensors['eigv'] = eigenvalues
-        #
-        # logs_traj = self.compute_logs(manifold, self.points)
-        # tensors['logs_traj'] = logs_traj
-
-        return figs, metrics, tensors
-
-
-    def compute_interps_local(self, manifold):
-        # works only for sequences
-        assert (self.interp_params['ending_idx'] - self.interp_params['starting_idx']) == 90
-        preds_local = torch.zeros(3, 30, self.points.shape[-1])
-        # divide into three equal parts
-        x1 = 5
-        x2 = 35
-        x3 = 65
-        x4 = 95
-        intervals = [(x1, x2), (x2, x3), (x3, x4)]
-        for i, (s, e) in enumerate(intervals):
-            interp_params = self.interp_params.copy()
-            interp_params['starting_idx'] = s
-            interp_params['ending_idx'] = e
-            interp_params['n_interps'] = 30
-            preds_local[i] = self.compute_interps(manifold, self.points, **interp_params)
-
-        return preds_local
 
     @staticmethod
     def get_mesh_2d(traj, eps, density):
@@ -319,6 +219,65 @@ class GeneralLogger(MyLogger):
         total_mt, base_mt, corr_mt = manifold.metric_tensor(pts[None], debug=True)
         (eigenvalues) = np.linalg.eigh(corr_mt.detach())
         return eigenvalues
+
+
+class SineExperimentsLogger(GeneralLogger):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.interp_params = {
+            'starting_idx': 5,
+            'ending_idx': 95,
+            'n_interps': 90,
+            'rgd_params': dict(print_iterations=False, max_iter=500, step_size=0.1, tol=1e-4)
+        }
+
+    def on_train_start(self, trainer, pl_module):
+        assert isinstance(trainer.logger, pl.loggers.TensorBoardLogger)  # make sure we are using tensorboard
+        log_dir = trainer.logger.log_dir
+
+        gt_path = os.path.join(log_dir, f'gt.pt')
+        torch.save(self.points, gt_path)
+
+        base_preds = self.compute_interps(pl_module.manifold.base_manifold, self.points, **self.interp_params, use_rgd=False)
+        bp_path = os.path.join(log_dir, f'base_preds.pt')
+        torch.save(base_preds, bp_path)
+
+    def compute_interps_local(self, manifold):
+        assert (self.interp_params['ending_idx'] - self.interp_params['starting_idx']) == 90
+        preds_local = torch.zeros(3, 30, self.points.shape[-1])
+        # divide into three equal parts
+        x1 = 5
+        x2 = 35
+        x3 = 65
+        x4 = 95
+        intervals = [(x1, x2), (x2, x3), (x3, x4)]
+        for i, (s, e) in enumerate(intervals):
+            interp_params = self.interp_params.copy()
+            interp_params['starting_idx'] = s
+            interp_params['ending_idx'] = e
+            interp_params['n_interps'] = 30
+            preds_local[i] = self.compute_interps(manifold, self.points, **interp_params)
+
+        return preds_local
+
+    def plot(self, manifold, **kwargs):
+        figs = {}
+        metrics = {}
+        tensors = {}
+
+        preds = self.compute_interps(manifold, self.points, **self.interp_params)
+        tensors['preds'] = preds
+
+        preds_local = self.compute_interps_local(manifold)
+        tensors['preds_local'] = preds_local
+
+        encoder_vals = self.compute_level_set(manifold, self.points)
+        tensors['encoder_vals'] = encoder_vals
+
+        eigv = self.compute_eigenvalues(manifold, self.points)
+        metrics['eigv'] = eigv
+
+        return figs, metrics, tensors
 
 
 class MNISTLogger(GeneralLogger):
