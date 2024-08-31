@@ -1,0 +1,12 @@
+_target_: src.models.coordnet.CoordNetSmall
+emb_features: 2048
+embedding_params:
+    sigma: 0.5
+embedding_type: fourier
+first_hidden_params: null
+first_hidden_type: relu
+hidden_features: 512
+in_features: 2
+out_features: 1
+second_hidden_params: null
+second_hidden_type: relu

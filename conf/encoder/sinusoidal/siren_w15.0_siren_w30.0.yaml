@@ -1,0 +1,14 @@
+_target_: src.models.coordnet.CoordNetSmall
+emb_features: 2048
+embedding_params:
+    omega_0: 15.0
+embedding_type: sine
+first_hidden_params:
+    omega_0: 30.0
+first_hidden_type: sine
+hidden_features: 512
+in_features: 2
+out_features: 1
+second_hidden_params:
+    omega_0: 30.0
+second_hidden_type: sine

@@ -1,0 +1,6 @@
+_target_: src.datasets.euclidean.OscillatingHelix3DDataset
+n_points: 100
+starting_angle: 0.
+ending_angle: 6.28
+center: True
+seed: 42

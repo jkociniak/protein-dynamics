@@ -1,0 +1,5 @@
+_target_: src.datasets.euclidean.DebugNDCircle
+n_dimensions: 4
+n_points: 100
+center: True
+seed: 42

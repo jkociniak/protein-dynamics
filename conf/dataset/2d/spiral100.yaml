@@ -1,0 +1,6 @@
+_target_: src.datasets.euclidean.SpiralDataset
+n_points: 100
+starting_angle: 0.
+ending_angle: 3.14
+center: True
+seed: 42

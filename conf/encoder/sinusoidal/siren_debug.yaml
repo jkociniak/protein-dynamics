@@ -1,0 +1,8 @@
+_target_: src.models.siren.Siren
+in_features: 2
+out_features: 1
+first_hidden: 2048
+hidden_features: 512
+hidden_layers: 3
+outermost_linear: True
+first_omega_0: 10.0

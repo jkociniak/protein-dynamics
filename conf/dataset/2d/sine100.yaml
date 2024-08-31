@@ -1,0 +1,4 @@
+_target_: src.datasets.euclidean.SineDataset
+n_points: 100
+center: True
+seed: 42
