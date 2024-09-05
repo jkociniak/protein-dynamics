@@ -307,10 +307,10 @@ class MNISTLogger(GeneralLogger):
         return figs, metrics, tensors
 
     def compute_distance_matrix_loss(self, manifold):
-        pts = self.dataset.points[self.sorted_indices]
+        pts = self.points[self.sorted_indices]
         corr_distance_matrix = manifold.pairwise_distance(pts[None], pts[None]).squeeze().detach()
         N = len(self.sorted_indices)
-        ref = torch.zeros(N, N)
+        ref = torch.zeros(N, N, device=pts.device)
         ref[N//2:, :N//2] = 1
         ref[:N//2, N//2:] = 1
         loss = torch.nn.functional.mse_loss(corr_distance_matrix, ref)
@@ -318,7 +318,7 @@ class MNISTLogger(GeneralLogger):
         return loss
 
     def draw_distance_matrix_comp(self, manifold):
-        pts = self.dataset.points[self.sorted_indices]
+        pts = self.points[self.sorted_indices]
         if self.dataset.n_components is None:
             k = pts.shape[1]
         else:
@@ -329,8 +329,8 @@ class MNISTLogger(GeneralLogger):
         # Create a figure and axis
         fig, ax = plt.subplots(1, 2, figsize=(7.5, 3))
 
-        self.plot_heatmap(ax[0], distance_matrix, f'L2 Distance Matrix (first {k} PCA components)')
-        self.plot_heatmap(ax[1], corr_distance_matrix, f'Corrected Distance Matrix')
+        self.plot_heatmap(ax[0], distance_matrix.detach().cpu(), f'L2 Distance Matrix (first {k} PCA components)')
+        self.plot_heatmap(ax[1], corr_distance_matrix.detach().cpu(), f'Corrected Distance Matrix')
 
         return fig
 
