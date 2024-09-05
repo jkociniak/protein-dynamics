@@ -111,7 +111,7 @@ def my_app(cfg: DictConfig) -> None:
     train_dataset, val_dataset, test_dataset = random_split(dataset, dataset_lengths,
                                                             generator=torch.Generator().manual_seed(cfg.dataset.seed))
 
-    train_loader = DataLoader(train_dataset, batch_size=tp.batch_size)
+    train_loader = DataLoader(train_dataset, batch_size=tp.batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=tp.batch_size)
     test_loader = DataLoader(test_dataset, batch_size=tp.batch_size)
 
@@ -131,8 +131,11 @@ def my_app(cfg: DictConfig) -> None:
                                        decoder_cfg=cfg['decoder'],
                                        scheduler_cfg=cfg['scheduler'])
 
-    default_callbacks = [pl.callbacks.lr_monitor.LearningRateMonitor(logging_interval='step')]
+    print('Plotter settings:')
     print(cfg['plotter'])
+    default_callbacks = [pl.callbacks.lr_monitor.LearningRateMonitor(logging_interval='step'),
+                         pl.callbacks.ModelCheckpoint(monitor='distance_matrix_loss', mode='min', save_top_k=10)]
+
     custom_callbacks = [instantiate(cfg['plotter'], dataset=dataset)]  # must be done on CPU
     callbacks = default_callbacks + custom_callbacks
 
