@@ -21,10 +21,11 @@ def gradients(y, x):
     # x dim = (batch, ...,  n)
     # y dim = (batch, ..., m)
     #assert len(x.shape) == 2 and len(y.shape) == 2
+    assert x.device == y.device
     assert x.shape[0] == y.shape[0]
     assert x.shape[:-1] == y.shape[:-1]
 
-    all_grads = torch.zeros((*y.shape[:-1], y.shape[-1], x.shape[-1]))
+    all_grads = torch.zeros((*y.shape[:-1], y.shape[-1], x.shape[-1]), device=x.device)
     for i, yi in enumerate(y.unbind(dim=-1)):
         all_grads[..., i, :] = torch.autograd.grad(yi, x,
                                   grad_outputs=torch.ones_like(yi),
