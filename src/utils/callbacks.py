@@ -216,7 +216,7 @@ class GeneralLogger(MyTensorBoardLogger, ABC):
 
     @staticmethod
     def compute_eigenvalues(manifold, pts):
-        total_mt, base_mt, corr_mt = manifold.metric_tensor(pts.to(device=manifold.correction_encoder.device)[None], debug=True)
+        total_mt, base_mt, corr_mt = manifold.metric_tensor(pts[None], debug=True)
         (eigenvalues) = np.linalg.eigh(corr_mt.detach())
         return eigenvalues
 
@@ -288,6 +288,10 @@ class MNISTLogger(GeneralLogger):
         self.sorted_indices = sorted_indices
 
     def plot(self, manifold, **kwargs):
+        device = next(manifold.correction_encoder.parameters()).device
+        manifold.alpha = manifold.alpha.to(device=device)
+        manifold.beta = manifold.beta.to(device=device)
+        self.points = self.points.to(device=manifold.device)
         figs = {}
         metrics = {}
         tensors = {}
