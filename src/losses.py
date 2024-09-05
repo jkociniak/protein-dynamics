@@ -154,7 +154,8 @@ class Loss(nn.Module):
         # normal basis shape: (N, M, enc_dim, D)
         # we want to generate two samples for each normal basis vector
         # so weights shape: (N, M, enc_dim, 2, D)
-        weights = self.params['non_manifold_eps'] * torch.ones((*normal_basis.shape[:-1], 2, normal_basis.shape[-1]))
+        ones = torch.ones((*normal_basis.shape[:-1], 2, normal_basis.shape[-1]), device=x.device)
+        weights = self.params['non_manifold_eps'] * ones
         weights[..., 0, :] = -weights[..., 0, :]
 
         #to generate dirs we just need to multiply normal basis by weights and use broadcasting
