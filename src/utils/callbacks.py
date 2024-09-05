@@ -216,7 +216,7 @@ class GeneralLogger(MyTensorBoardLogger, ABC):
 
     @staticmethod
     def compute_eigenvalues(manifold, pts):
-        total_mt, base_mt, corr_mt = manifold.metric_tensor(pts[None], debug=True)
+        total_mt, base_mt, corr_mt = manifold.metric_tensor(pts.to(device=manifold.device)[None], debug=True)
         (eigenvalues) = np.linalg.eigh(corr_mt.detach())
         return eigenvalues
 
