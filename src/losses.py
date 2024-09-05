@@ -87,9 +87,12 @@ class Loss(nn.Module):
             self.div_ctr += 1
 
         # NON-MANIFOLD POINTS LOSS
+        print()
+        print('XXXXXXXXXXXXXXX')
         print(f'batch device: {batch.device}')
         print(f'grads device: {grads.device}')
         nm_pts = self.generate_negatives_unsupervised(batch, grads)
+        print()
         nm_out, nm_coords = manifold.correction_encoder(nm_pts)
 
         nm_normal_coords = nm_out[..., tangent_dims:]
