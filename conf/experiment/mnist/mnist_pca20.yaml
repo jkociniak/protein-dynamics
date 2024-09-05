@@ -1,0 +1,41 @@
+# @package _global_
+
+defaults:
+      - override /encoder: fourier_s0.5_relu
+      - override /loss: mnist_pca20
+      - override /dataset: mnist100_pca5
+
+dataset:
+      n_components: 20
+
+encoder:
+      in_features: 20
+      out_features: 11
+
+corrected_manifold:
+      _target_: src.manifolds.euclidean.L2CorrectedEuclideanManifold
+      base_manifold_params:
+            d: 20
+      alpha: 1e-5
+      beta: 1.
+
+optimizer:
+      _target_: torch.optim.Adam
+      lr: 1e-5
+      weight_decay: 0.
+
+training_params:
+      seed: 42
+      batch_size: 100
+      max_epochs: 500
+      accelerator: cpu
+      devices: 1
+      trainer_root_dir: null
+      ckpt_path: null
+      log_dir: lightning_logs
+      name: mnist_pca20_debug
+
+plotter:
+      _target_: src.utils.callbacks.MNISTLogger
+      start_epoch: 0
+      freq: 10

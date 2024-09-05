@@ -1,0 +1,40 @@
+# @package _global_
+
+defaults:
+      - override /encoder: relu/fourier_s0.5_relu
+      - override /loss: mnist_pca12_classes49
+      - override /dataset: mnist100_pca12_classes49
+
+encoder:
+      in_features: 12
+      out_features: 10
+      embedding_params:
+            sigma: 0.1
+
+corrected_manifold:
+      _target_: src.manifolds.euclidean.L2CorrectedEuclideanManifold
+      base_manifold_params:
+            d: 12
+      alpha: 1e-4
+      beta: 1.
+
+optimizer:
+      _target_: torch.optim.Adam
+      lr: 1e-4
+      weight_decay: 0.
+
+training_params:
+      seed: 42
+      batch_size: 100
+      max_epochs: 10000
+      accelerator: cpu
+      devices: 1
+      trainer_root_dir: null
+      ckpt_path: null
+      log_dir: lightning_logs
+      name: mnist_pca12_classes49_normals6
+
+plotter:
+      _target_: src.utils.callbacks.MNISTLogger
+      start_epoch: 0
+      freq: 50

@@ -1,0 +1,38 @@
+# @package _global_
+
+defaults:
+      - override /encoder: fourier_s0.5_relu
+      - override /loss: helix_3d
+      - override /dataset: mnist100_pca5
+
+encoder:
+      in_features: 5
+      out_features: 1
+
+corrected_manifold:
+      _target_: src.manifolds.euclidean.L2CorrectedEuclideanManifold
+      base_manifold_params:
+            d: 5
+      alpha: 1e-4
+      beta: 1.
+
+optimizer:
+      _target_: torch.optim.Adam
+      lr: 1e-5
+      weight_decay: 0.
+
+training_params:
+      seed: 42
+      batch_size: 100
+      max_epochs: 500
+      accelerator: cpu
+      devices: 1
+      trainer_root_dir: null
+      ckpt_path: null
+      log_dir: lightning_logs
+      name: mnist_debug
+
+plotter:
+      _target_: src.utils.callbacks.GeneralLogger
+      start_epoch: 0
+      freq: 500
