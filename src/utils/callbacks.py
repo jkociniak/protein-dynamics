@@ -99,7 +99,7 @@ class MyTensorBoardLogger(pl.Callback, ABC):
         #pl_module.manifold.train()
 
         for name, metric in metrics.items():
-            trainer.logger.experiment.add_scalar(name, metric, global_step=trainer.global_step)
+            trainer.log(name, metric, global_step=trainer.global_step)
 
         for name, fig in figs.items():
             trainer.logger.experiment.add_figure(name, fig, global_step=trainer.global_step)
