@@ -150,9 +150,6 @@ class Loss(nn.Module):
         return losses
 
     def generate_negatives_unsupervised(self, x, normal_basis):
-        print(f'x device: {x.device}')
-        print(f'normal basis device: {normal_basis.device}')
-        raise Exception
         # x shape: (N, M, D)
         # normal basis shape: (N, M, enc_dim, D)
         # we want to generate two samples for each normal basis vector
