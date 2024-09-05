@@ -87,6 +87,8 @@ class Loss(nn.Module):
             self.div_ctr += 1
 
         # NON-MANIFOLD POINTS LOSS
+        print(f'batch device: {batch.device}')
+        print(f'grads device: {grads.device}')
         nm_pts = self.generate_negatives_unsupervised(batch, grads)
         nm_out, nm_coords = manifold.correction_encoder(nm_pts)
 
