@@ -164,6 +164,10 @@ class Loss(nn.Module):
         # print(f'normal basis shape: {normal_basis.shape}')
         # print(f'weights shape: {weights.shape}')
 
+        print(f'x device: {x.device}')
+        print(f'normal basis device: {normal_basis.device}')
+        print(f'weights device: {weights.device}')
+
         dirs = normal_basis.unsqueeze(3) * weights  # dim (N, M, C, 2, D)
         dirs = torch.flatten(dirs, 2, 3)  # dim (N, M, 2*C, D)
         samples = x[..., None, :] + dirs  # dim (N, M, 2*C, D)
