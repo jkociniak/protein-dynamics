@@ -1,0 +1,16 @@
+weights:
+      manifold_norm: 3000.
+      manifold_eikonal: 600.
+      manifold_div: 0.
+      non_manifold_norm: 200.
+      non_manifold_eikonal: 400.
+      non_manifold_div: 0.
+      neg_hess_norm: 0.
+      geodesic: 0.
+      cosine: 0.
+      orthogonal: 1.
+      reconstruction: 0.
+params:
+      non_manifold_alpha: 3e-2
+      non_manifold_eps: 100.
+      max_hess_norm: 1.
