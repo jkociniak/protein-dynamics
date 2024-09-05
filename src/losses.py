@@ -89,8 +89,9 @@ class Loss(nn.Module):
         # NON-MANIFOLD POINTS LOSS
         print()
         print('XXXXXXXXXXXXXXX')
-        print(f'batch device: {batch.device}')
-        print(f'grads device: {grads.device}')
+        err_mess_1 = f'batch device: {batch.device}'
+        err_mes_2 = f'grads device: {grads.device}'
+        raise Exception(err_mess_1 + '\n' + err_mes_2)
         nm_pts = self.generate_negatives_unsupervised(batch, grads)
         print()
         nm_out, nm_coords = manifold.correction_encoder(nm_pts)
@@ -167,14 +168,6 @@ class Loss(nn.Module):
         weights[..., 0, :] = -weights[..., 0, :]
 
         #to generate dirs we just need to multiply normal basis by weights and use broadcasting
-
-        # print(f'x shape: {x.shape}')
-        # print(f'normal basis shape: {normal_basis.shape}')
-        # print(f'weights shape: {weights.shape}')
-
-
-        print(f'weights device: {weights.device}')
-
         dirs = normal_basis.unsqueeze(3) * weights  # dim (N, M, C, 2, D)
         dirs = torch.flatten(dirs, 2, 3)  # dim (N, M, 2*C, D)
         samples = x[..., None, :] + dirs  # dim (N, M, 2*C, D)
