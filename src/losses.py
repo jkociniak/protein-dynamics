@@ -22,6 +22,13 @@ class Loss(nn.Module):
         assert len(batch.shape) == 3, "Batch must be 3D - (num_traj, num_points, dim)"
         losses = {}
 
+        print()
+        print('XXXXXXXXXXXXXXX')
+        err_mess_1 = f'batch device: {batch.device}'
+        err_mess_2 = ''
+        #err_mess_2 = f'grads device: {grads.device}'
+        raise Exception(err_mess_1 + '\n' + err_mess_2)
+
         tangent_dims = 0
         if manifold.correction_decoder is not None:
             tangent_dims = manifold.correction_decoder.hparams['in_features']
@@ -87,13 +94,7 @@ class Loss(nn.Module):
             self.div_ctr += 1
 
         # NON-MANIFOLD POINTS LOSS
-        print()
-        print('XXXXXXXXXXXXXXX')
-        err_mess_1 = f'batch device: {batch.device}'
-        err_mes_2 = f'grads device: {grads.device}'
-        raise Exception(err_mess_1 + '\n' + err_mes_2)
         nm_pts = self.generate_negatives_unsupervised(batch, grads)
-        print()
         nm_out, nm_coords = manifold.correction_encoder(nm_pts)
 
         nm_normal_coords = nm_out[..., tangent_dims:]
