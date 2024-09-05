@@ -1,7 +1,7 @@
 defaults:
       - _self_
       - dataset: hyper_4d
-      - encoder: siren_w10.0_relu
+      - encoder: relu/siren_w10.0_relu
       - loss: arch_comparison_2d
 
 decoder: null
