@@ -7,6 +7,7 @@ import torch
 import pytorch_lightning as pl
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 
 from src.utils.tensor import gradients
 from src.datasets.euclidean import MNISTPCADataset
@@ -77,9 +78,9 @@ class InspectGradients(pl.Callback):
 
             plt.close()
 
+class FlexibleLogger(pl.Callback, ABC):
+    """ Abstract class for logging, able to save arbitrary metrics, tensors, and figures to TensorBoard or Weights and Biases."""
 
-class MyTensorBoardLogger(pl.Callback, ABC):
-    """ Abstract class for logging, able to save arbitrary metrics, tensors, and figures."""
     def __init__(self, start_epoch=0, freq=10):
         super().__init__()
         self.start_epoch = start_epoch
@@ -89,41 +90,56 @@ class MyTensorBoardLogger(pl.Callback, ABC):
         if trainer.current_epoch < self.start_epoch:
             return
 
-        if (trainer.current_epoch + 1) % self.freq != 0:
+        if trainer.current_epoch % self.freq != 0:
             return
 
-        assert isinstance(trainer.logger, pl.loggers.TensorBoardLogger)  # make sure we are using tensorboard
+        assert isinstance(trainer.logger,
+                          (TensorBoardLogger, WandbLogger)), "Logger must be either TensorBoardLogger or WandbLogger"
 
-        #pl_module.manifold.eval()
+        # pl_module.manifold.eval()
         figs, metrics, tensors = self.plot(pl_module.manifold, current_epoch=trainer.current_epoch)
-        #pl_module.manifold.train()
+        # pl_module.manifold.train()
 
+        # Log metrics
         for name, metric in metrics.items():
-            pl_module.log(name, metric, on_epoch=True)
+            print(f'Logging metric {name} with value {metric} at epoch {trainer.current_epoch}')
+            if isinstance(trainer.logger, TensorBoardLogger):
+                trainer.logger.experiment.add_scalar(name, metric, global_step=trainer.global_step)
+            else:  # WandbLogger
+                pl_module.log(name, metric)
 
+        # Log figures
         for name, fig in figs.items():
-            trainer.logger.experiment.add_figure(name, fig, global_step=trainer.global_step)
+            if isinstance(trainer.logger, TensorBoardLogger):
+                trainer.logger.experiment.add_figure(name, fig, global_step=trainer.global_step)
+            else:  # WandbLogger
+                trainer.logger.experiment.log({name: fig})
             plt.close(fig)
 
-        log_dir = trainer.logger.log_dir
-        tensors_dir = os.path.join(log_dir, f'{trainer.current_epoch}')
-        # create a directory named current_epoch to save the tensors
+        # Save tensors
         if tensors is not None:
+            if isinstance(trainer.logger, TensorBoardLogger):
+                tensors_dir = os.path.join(trainer.logger.log_dir, f'tensors/epoch_{trainer.current_epoch}')
+            else:  # WandbLogger
+                tensors_dir = os.path.join(trainer.logger.experiment.dir, f'tensors/epoch_{trainer.current_epoch}')
+
             os.makedirs(tensors_dir, exist_ok=True)
 
-        for name, tensor in tensors.items():
-            tensor_path = os.path.join(tensors_dir, f'{name}.pt')
-            torch.save(tensor, tensor_path)
+            for name, tensor in tensors.items():
+                tensor_path = os.path.join(tensors_dir, f'{name}.pt')
+                torch.save(tensor, tensor_path)
+                if isinstance(trainer.logger, WandbLogger):
+                    trainer.logger.experiment.save(tensor_path)
 
     @abstractmethod
     def plot(self, manifold, **kwargs) -> tuple:
         # should return figs, metrics, tensors
-        # figs and metrics will be uploaded to tensorboard
-        # tensors will be saved in the logdir, in the folder named after the current epoch
+        # figs and metrics will be uploaded to the logger
+        # tensors will be saved in the logger's directory, in a folder named after the current epoch
         pass
 
 
-class GeneralLogger(MyTensorBoardLogger, ABC):
+class GeneralLogger(FlexibleLogger, ABC):
     def __init__(self, dataset, **kwargs):
         super().__init__(**kwargs)
         self.dataset = dataset
@@ -282,10 +298,17 @@ class SineExperimentsLogger(GeneralLogger):
 
 class MNISTLogger(GeneralLogger):
     def __init__(self, dataset, **kwargs):
-        assert isinstance(dataset, MNISTPCADataset)
+        assert isinstance(dataset, MNISTPCADataset) or isinstance(dataset, torch.utils.data.Subset)
         super().__init__(dataset, **kwargs)
-        sorted_indices = sorted(range(self.dataset.indices.shape[0]), key=lambda i: self.dataset.labels[i])
-        self.sorted_indices = sorted_indices
+        self.sorted_indices = sorted(dataset.indices, key=lambda i: dataset.dataset.labels[i])
+
+    def on_sanity_check_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
+        def validate_fun(manifold, batch):
+            x, label = batch
+            sorted_indices = sorted(range(x.shape[0]), key=lambda i: label[i])
+            distance_loss = self.distance_matrix_loss(manifold, x[sorted_indices])
+            return 'distance_matrix_loss', distance_loss
+        pl_module.validate_fun = validate_fun
 
     def plot(self, manifold, **kwargs):
         device = next(manifold.correction_encoder.parameters()).device
@@ -299,22 +322,24 @@ class MNISTLogger(GeneralLogger):
         eigv = self.compute_eigenvalues(manifold, self.points)
         tensors['eigv'] = eigv
 
-        metrics['distance_matrix_loss'] = self.compute_distance_matrix_loss(manifold)
+        pts = self.points[self.sorted_indices]
+        metrics['train/distance_matrix_loss'] = self.distance_matrix_loss(manifold, pts)
 
         # Draw the distance matrix
         figs['distance_matrix_comp'] = self.draw_distance_matrix_comp(manifold)
 
         return figs, metrics, tensors
 
-    def compute_distance_matrix_loss(self, manifold):
-        pts = self.points[self.sorted_indices]
+    @staticmethod
+    def distance_matrix_loss(manifold, pts):
+        # assume that the points are sorted by label
         corr_distance_matrix = manifold.pairwise_distance(pts[None], pts[None]).squeeze().detach()
-        N = len(self.sorted_indices)
+        N = corr_distance_matrix.shape[0]
+        assert N % 2 == 0
         ref = torch.zeros(N, N, device=pts.device)
-        ref[N//2:, :N//2] = 1
-        ref[:N//2, N//2:] = 1
+        ref[N // 2:, :N // 2] = 1
+        ref[:N // 2, N // 2:] = 1
         loss = torch.nn.functional.mse_loss(corr_distance_matrix, ref)
-        print(f'Distance matrix loss shape: {loss.shape}')
         return loss
 
     def draw_distance_matrix_comp(self, manifold):
@@ -327,7 +352,7 @@ class MNISTLogger(GeneralLogger):
         corr_distance_matrix = manifold.pairwise_distance(pts[None], pts[None]).squeeze().detach()
 
         # Create a figure and axis
-        fig, ax = plt.subplots(1, 2, figsize=(7.5, 3))
+        fig, ax = plt.subplots(1, 2, figsize=(13, 6))
 
         self.plot_heatmap(ax[0], distance_matrix.detach().cpu(), f'L2 Distance Matrix (first {k} PCA components)')
         self.plot_heatmap(ax[1], corr_distance_matrix.detach().cpu(), f'Corrected Distance Matrix')

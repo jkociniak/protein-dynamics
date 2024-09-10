@@ -3,7 +3,7 @@
 defaults:
       - override /encoder: relu/fourier_s0.5_relu
       - override /loss: mnist_pca12_classes49
-      - override /dataset: mnist100_pca12_classes49
+      - override /dataset: mnist250_pca12_classes49
 
 encoder:
       in_features: 12
@@ -37,4 +37,4 @@ training_params:
 plotter:
       _target_: src.utils.callbacks.MNISTLogger
       start_epoch: 0
-      freq: 50
+      freq: 10

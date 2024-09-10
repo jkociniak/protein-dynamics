@@ -35,11 +35,22 @@ class LitManifoldMetricCorrector(pl.LightningModule):
         self.optimizer_cfg = optimizer_cfg
         self.scheduler_cfg = scheduler_cfg
 
+    @staticmethod
+    def validate_fun(model, batch):
+        return 'dummy_loss', 0.
+
+    # @staticmethod
+    # def test_fun(model, batch):
+    #     return 'dummy_loss', 0.
 
     def on_train_epoch_end(self):
-        self.logger.experiment.add_scalar('train/epoch', self.current_epoch, self.global_step)
+        if isinstance(self.logger, pl.loggers.TensorBoardLogger):
+            self.logger.experiment.add_scalar('train/epoch', self.current_epoch, self.global_step)
 
     def training_step(self, batch, batch_idx):
+        x, label = batch
+        batch = x
+
         encoder_opt = self.optimizers()
         encoder_opt.zero_grad()
 
@@ -54,9 +65,16 @@ class LitManifoldMetricCorrector(pl.LightningModule):
         assert len(losses) > 0, 'Losses must be provided'
         total_loss = 0.
         for name, val in losses.items():
-            self.logger.experiment.add_scalar(f'train/{name}_loss', val, self.global_step)
+            if isinstance(self.logger, pl.loggers.WandbLogger):
+                self.log(f'train/{name}_loss', val)
+            elif isinstance(self.logger, pl.loggers.TensorBoardLogger):
+                self.logger.experiment.add_scalar(f'train/{name}_loss', val, self.global_step)
             total_loss += self.loss.weights[name] * val
-        self.logger.experiment.add_scalar('train/loss', total_loss, self.global_step)
+
+        if isinstance(self.logger, pl.loggers.WandbLogger):
+            self.log('train/loss', total_loss)
+        elif isinstance(self.logger, pl.loggers.TensorBoardLogger):
+            self.logger.experiment.add_scalar('train/loss', total_loss, self.global_step)
         self.manual_backward(total_loss)
         #plot_grad_flow(self.named_parameters())
 
@@ -68,10 +86,14 @@ class LitManifoldMetricCorrector(pl.LightningModule):
         return total_loss
 
     def validation_step(self, batch, batch_idx):
-        return {}
+        name, metric = self.validate_fun(self.manifold, batch)
+        self.log(f'val/{name}', metric)
+        return metric
 
-    def test_step(self, batch, batch_idx):
-        return {}
+    # def test_step(self, batch, batch_idx):
+    #     name, metric = self.test_fun(self.manifold, batch)
+    #     self.log(f'test/{name}', metric)
+    #     return metric
 
     def configure_optimizers(self):
         if self.decoder is not None:
@@ -101,25 +123,35 @@ class LitManifoldMetricCorrector(pl.LightningModule):
 def my_app(cfg: DictConfig) -> None:
     # validation
     assert cfg.corrected_manifold.base_manifold_params.d == cfg.encoder.in_features, 'Encoder and manifold dimensions must match'
-    tp = cfg.training_params
 
     dataset = instantiate(cfg.dataset)
     print('cfg dataset:', cfg.dataset)
     print('dataset:', dataset)
     print('dataset length:', len(dataset))
-    dataset_lengths = [1., 0., 0.]
-    train_dataset, val_dataset, test_dataset = random_split(dataset, dataset_lengths,
-                                                            generator=torch.Generator().manual_seed(cfg.dataset.seed))
 
-    train_loader = DataLoader(train_dataset, batch_size=tp.batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=tp.batch_size)
-    test_loader = DataLoader(test_dataset, batch_size=tp.batch_size)
+    from sklearn.model_selection import train_test_split
+    indices = list(range(len(dataset)))
+    labels = dataset.labels
+
+    train_indices, test_indices = train_test_split(indices,
+                                                   test_size=0.2,
+                                                   stratify=labels,
+                                                   random_state=cfg.dataset.seed)
+
+    train_dataset = torch.utils.data.Subset(dataset, train_indices)
+    train_dataset.n_components = dataset.n_components
+    train_dataset.points = dataset.points
+    test_dataset = torch.utils.data.Subset(dataset, test_indices)
+    test_dataset.points = dataset.points
+    test_dataset.n_components = dataset.n_components
+
+    train_loader = DataLoader(train_dataset, batch_size=len(train_dataset))
+    test_loader = DataLoader(test_dataset, batch_size=len(test_dataset))
 
     print('full dataset length:', len(dataset))
     print('train dataset length:', len(train_dataset))
-    print('val dataset length:', len(val_dataset))
     print('test dataset length:', len(test_dataset))
-    print('batch size:', tp.batch_size)
+    print('batch size OVERRIDDEN TO ALWAYS INCLUDE FULL DATASET')
 
     tp = cfg['training_params']
     pl.seed_everything(tp['seed'])
@@ -133,17 +165,16 @@ def my_app(cfg: DictConfig) -> None:
 
     print('Plotter settings:')
     print(cfg['plotter'])
-    default_callbacks = [pl.callbacks.lr_monitor.LearningRateMonitor(logging_interval='step'),
-                         pl.callbacks.ModelCheckpoint(monitor='distance_matrix_loss', mode='min', save_top_k=10)]
-
-    custom_callbacks = [instantiate(cfg['plotter'], dataset=dataset)]  # must be done on CPU
-    callbacks = default_callbacks + custom_callbacks
+    callbacks = [pl.callbacks.lr_monitor.LearningRateMonitor(logging_interval='step'),
+                 instantiate(cfg['plotter'], dataset=train_dataset),
+                 pl.callbacks.ModelCheckpoint(monitor='val/distance_matrix_loss', mode='min', save_top_k=10,
+                                              every_n_epochs=cfg['plotter']['freq'])]
 
     hydra_cfg = HydraConfig.get()
     encoder_name = hydra_cfg.runtime.choices.encoder
     dataset_name = hydra_cfg.runtime.choices.dataset
     name = tp['name'] + '/' + encoder_name + '_' + dataset_name
-    logger = pl.loggers.TensorBoardLogger(save_dir=tp['log_dir'], name=name)
+    logger = pl.loggers.WandbLogger(project='normal-vectors', save_dir=tp['log_dir'], name=name, log_model=True)
 
     training_params = dict(
         max_epochs=tp['max_epochs'],
@@ -153,13 +184,13 @@ def my_app(cfg: DictConfig) -> None:
         logger=logger,
         log_every_n_steps=1,  # we use 1 batch so we want to log at every batch
         callbacks=callbacks,
-        limit_val_batches=0.,
+        check_val_every_n_epoch=cfg['plotter']['freq']
     )
 
     trainer = pl.Trainer(**training_params)
 
-    trainer.fit(model, train_loader, val_loader, ckpt_path=tp.ckpt_path)
-    trainer.test(model, ckpt_path="best", dataloaders=test_loader)
+    trainer.fit(model, train_loader, test_loader, ckpt_path=tp.ckpt_path)
+    #trainer.test(model, ckpt_path="best", dataloaders=test_loader)
 
 
 if __name__ == "__main__":

@@ -400,3 +400,6 @@ class MNISTPCADataset(EuclideanEmbeddedSubmanifoldDataset):
         else:
             assert len(data.shape) == 2 and data.shape[1] == 784, 'Invalid data shape'
         return data
+
+    def __getitem__(self, idx):
+        return self.points[idx], self.labels[idx]
