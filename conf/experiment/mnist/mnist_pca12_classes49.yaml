@@ -37,4 +37,4 @@ training_params:
 plotter:
       _target_: src.utils.callbacks.MNISTLogger
       start_epoch: 0
-      freq: 10
+      freq: 500
