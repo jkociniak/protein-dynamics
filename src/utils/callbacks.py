@@ -325,6 +325,7 @@ class MNISTLogger(GeneralLogger):
 
         # Draw the distance matrix
         figs['distance_matrix_comp'] = self.draw_distance_matrix_comp(manifold)
+        figs['gradient_analysis'] = self.draw_gradient_analysis(manifold)
 
         return figs, metrics, tensors
 
@@ -334,10 +335,9 @@ class MNISTLogger(GeneralLogger):
         corr_distance_matrix = manifold.pairwise_distance(pts[None], pts[None]).squeeze().detach()
         N = corr_distance_matrix.shape[0]
         assert N % 2 == 0
-        ref = torch.zeros(N, N, device=pts.device)
-        ref[N // 2:, :N // 2] = 1
-        ref[:N // 2, N // 2:] = 1
-        loss = torch.nn.functional.mse_loss(corr_distance_matrix, ref)
+        corr_distance_matrix[N // 2:, :N // 2] = 1 / corr_distance_matrix[N // 2:, :N // 2]
+        corr_distance_matrix[:N // 2, N // 2:] = 1 / corr_distance_matrix[:N // 2, N // 2:]
+        loss = torch.nn.functional.mse_loss(corr_distance_matrix, torch.zeros(N, N, device=pts.device))
         return loss
 
     def draw_distance_matrix_comp(self, manifold):
@@ -370,3 +370,40 @@ class MNISTLogger(GeneralLogger):
         ax.set_xlabel('Point Index')
         ax.set_ylabel('Point Index')
         ax.set_title(title)
+
+    def draw_gradient_analysis(self, manifold):
+        fig = plt.figure(figsize=(18, 12))
+        i = 1
+        for point_id in [0, 50, 150, 199]:
+            pts = self.points[point_id][None, None]
+            pts_enc, coords = manifold.correction_encoder(pts)
+            grads = gradients(pts_enc, coords)[0, 0, ...]  # dimensions: (enc_dim, D)
+            grads_gram = torch.einsum("id,jd->ij", grads, grads)  # dimensions: (enc_dim, enc_dim)
+            grads_gram = grads_gram.detach().cpu().numpy()
+
+            # self.gram_matrices.append(grads_gram)
+
+            # plot the heatmap of the gradient's gram matrix
+
+            ax = fig.add_subplot(2, 4, i)
+            cax = ax.matshow(grads_gram, cmap='viridis')
+            fig.colorbar(cax)
+
+            i += 1
+
+            # plot labels
+            ax.set_title(f'Gradient Gram Matrix at point {point_id}')
+            ax.set_xticks(range(grads_gram.shape[0]))
+            ax.set_yticks(range(grads_gram.shape[1]))
+            ax.set_xticklabels(range(grads_gram.shape[0]))
+            ax.set_yticklabels(range(grads_gram.shape[1]))
+
+            ax = fig.add_subplot(2, 4, i)
+            cov_matrix = grads_gram.T @ grads_gram
+            (eigenvalues, eigenvectors) = np.linalg.eigh(cov_matrix)
+            ax.plot(eigenvalues, 'o-')
+            ax.set_title(f'Eigenvalues of the Gradient Cov Matrix at point {point_id}')
+
+            i += 1
+
+        return fig
