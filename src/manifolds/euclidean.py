@@ -438,9 +438,11 @@ class L2CorrectedEuclideanManifold(Manifold):
 
         assert isinstance(beta, float) and beta >= 0.
         self.beta = torch.tensor([beta], dtype=torch.float32)
+        self.beta = nn.Parameter(self.beta, requires_grad=False)
 
         assert isinstance(alpha, float) and alpha >= 0.
         self.alpha = torch.tensor([alpha], dtype=torch.float32)
+        self.alpha = nn.Parameter(self.alpha, requires_grad=False)
 
     def pairwise_distance(self, x, y):
         """
@@ -468,6 +470,7 @@ class L2CorrectedEuclideanManifold(Manifold):
         :param y: N x M x d tensor
         :return: N x M tensor
         """
+        print(f'x device: {x.device}, y device: {y.device}')
         base_dists = self.base_manifold.distance(x, y)  # dimensions: (N, M)
 
         x_enc, _ = self.correction_encoder(x)

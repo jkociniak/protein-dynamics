@@ -312,8 +312,6 @@ class MNISTLogger(GeneralLogger):
 
     def plot(self, manifold, **kwargs):
         device = next(manifold.correction_encoder.parameters()).device
-        manifold.alpha = manifold.alpha.to(device=device)
-        manifold.beta = manifold.beta.to(device=device)
         self.points = self.points.to(device=device)
         figs = {}
         metrics = {}
