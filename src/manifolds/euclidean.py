@@ -470,7 +470,7 @@ class L2CorrectedEuclideanManifold(Manifold):
         :param y: N x M x d tensor
         :return: N x M tensor
         """
-        print(f'x device: {x.device}, y device: {y.device}')
+        #print(f'x device: {x.device}, y device: {y.device}')
         base_dists = self.base_manifold.distance(x, y)  # dimensions: (N, M)
 
         x_enc, _ = self.correction_encoder(x)
@@ -554,12 +554,17 @@ class L2CorrectedEuclideanManifold(Manifold):
         x_enc, coords = self.correction_encoder(x)  # dimensions: (N, M, enc_dim)
         y_enc, _ = self.correction_encoder(y) # dimensions: (N, M', enc_dim)
 
+        validate_tensor(x_enc, 'x_enc')
+        validate_tensor(y_enc, 'y_enc')
+        validate_tensor(coords, 'coords')
+
         enc_grad = gradients(x_enc, coords)  # dimension (N, M, enc_dim, d)
 
         x_enc = x_enc.reshape(x.shape[0], x.shape[1], 1, -1)
         y_enc = y_enc.reshape(y.shape[0], 1, y.shape[1], -1)
         diffs = x_enc - y_enc  # dimensions: (N, M, M', enc_dim)
         enc_grad = enc_grad.unsqueeze(2)  # dimensions: (N, M, 1, enc_dim, d)
+        validate_tensor(enc_grad, 'enc_grad')
 
         # 3. combine to get correction gradient
         deep_corr_grad = 2 * torch.einsum('NMKij,NMKi->NMKj', enc_grad, diffs)  # dimensions: (N, M, M', d)

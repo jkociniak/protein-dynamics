@@ -1,0 +1,58 @@
+defaults:
+      - dataset: 2d/sine100
+      - encoder: relu/siren_w10.0_relu
+      - loss: nse
+      - _self_
+
+decoder: null
+
+#loss:
+#      weights:
+#            manifold_norm: 3000.
+#            manifold_eikonal: 400.
+#            manifold_div: 0.
+#            manifold_normals: 0.
+#            manifold_normal_subspace: 400.
+#            non_manifold_norm: 200.
+#            non_manifold_eikonal: 400.
+#            non_manifold_div: 0.
+#            neg_hess_norm: 0.
+#            geodesic: 0.
+#            cosine: 0.
+#            orthogonal: 200.
+#            reconstruction: 0.
+#      params:
+#            non_manifold_alpha: 10.
+#            non_manifold_eps: 0.05
+#            max_hess_norm: 1.
+#      normal_pretraining_batches: 1000
+
+corrected_manifold:
+      _target_: src.manifolds.euclidean.L2CorrectedEuclideanManifold
+      base_manifold_params:
+            d: 3
+      alpha: 1e-3
+      beta: 1.
+
+optimizer:
+      _target_: torch.optim.Adam
+      lr: 1e-5
+      weight_decay: 0.
+
+scheduler: null
+
+training_params:
+      seed: 42
+      batch_size: 1
+      max_epochs: 1000
+      accelerator: cpu
+      devices: 1
+      trainer_root_dir: null
+      ckpt_path: null
+      log_dir: lightning_logs
+      name: default
+
+plotter:
+      _target_: src.utils.callbacks.SineExperimentsLogger
+      start_epoch: 0
+      freq: 200

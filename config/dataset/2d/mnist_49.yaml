@@ -1,0 +1,18 @@
+_target_: src.datasets.euclidean.mnist.MNISTPCADataset
+root: data
+n_components: 2
+center: False
+normalize: False
+seed: 42
+keep_classes: [4, 9]
+normal_estimation_cfg:
+  boundary_cfg:
+    boundary_neighbor_thr: 0.9
+    boundary_sdf_thr: -0.5
+  log_sdf_radius: -1.1
+  lr: 0.1
+  noise_scale: 0.1
+  num_noisy_samples: 13
+  optimization_steps: 50
+  sdf_level_set: 0
+  sdf_loss_weight: 0.9

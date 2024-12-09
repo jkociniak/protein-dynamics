@@ -1,13 +1,21 @@
+import numpy as np
+import wandb
+
 import hydra
 from hydra.utils import instantiate
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from hydra.core.hydra_config import HydraConfig
 
 import pytorch_lightning as pl
 import torch
 
-from torch.utils.data import random_split, DataLoader
+from sklearn.model_selection import train_test_split
+#from torch.utils.data import random_split, DataLoader
+from torch_geometric.data import DataLoader
 from src.losses import Loss
+import src.datasets.euclidean
+from src.utils.normal_estimation import EstimateNormalsTransform
+import matplotlib.pyplot as plt
 
 
 class LitManifoldMetricCorrector(pl.LightningModule):
@@ -48,22 +56,27 @@ class LitManifoldMetricCorrector(pl.LightningModule):
             self.logger.experiment.add_scalar('train/epoch', self.current_epoch, self.global_step)
 
     def training_step(self, batch, batch_idx):
-        x, label = batch
-        batch = x
+        # x = batch.pos
+        # normals = batch.normal_basis
+
+        # assert x.shape[-1] == self.manifold.base_manifold.d, "Batch must have the same dimension as the manifold"
+        # if len(x.shape) == 2:  # we have a single point cloud
+        #     batch = x[None]
+        # assert len(batch.shape) == 3, "We expect batch of shape (B, N, D), where B is number of batches, N is the trajectory and D is the input dimension"
+        # assert batch.shape[0] == 1, "In this implementation batch must contain only a single trajectory"
+
+        #if normals is not None:
+        #    normals = normals[None]
+
+        #assert (normals.shape[0:2] == batch.shape[0:2]), f"Input {batch.shape} and normal shape {normals.shape} must match"
+        #assert (normals.shape[-1] == batch.shape[-1]), f"Input {batch.shape} and normal shape {normals.shape} must match"
 
         encoder_opt = self.optimizers()
         encoder_opt.zero_grad()
 
-        if len(batch.shape) == 2:  # we have a single trajectory
-            batch = batch[None]
-
-        assert len(batch.shape) == 3, "We expect batch of shape (B, N, D), where B is number of batches, N is the trajectory and D is the input dimension"
-        assert batch.shape[0] == 1, "Batch must contain only a single trajectory"
-        assert batch.shape[2] == self.manifold.base_manifold.d, "Batch must have the same dimension as the manifold"
-
         losses = self.loss(self.manifold, batch)
         assert len(losses) > 0, 'Losses must be provided'
-        total_loss = 0.
+        total_loss = torch.zeros(1, device=self.device)
         for name, val in losses.items():
             if isinstance(self.logger, pl.loggers.WandbLogger):
                 self.log(f'train/{name}_loss', val)
@@ -76,8 +89,7 @@ class LitManifoldMetricCorrector(pl.LightningModule):
         elif isinstance(self.logger, pl.loggers.TensorBoardLogger):
             self.logger.experiment.add_scalar('train/loss', total_loss, self.global_step)
         self.manual_backward(total_loss)
-        #plot_grad_flow(self.named_parameters())
-
+        torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 1e-2)
         encoder_opt.step()
 
         sch1 = self.lr_schedulers()
@@ -119,31 +131,45 @@ class LitManifoldMetricCorrector(pl.LightningModule):
         return [optimizer], [scheduler]
 
 
-@hydra.main(version_base=None, config_path="conf", config_name="config")
+@hydra.main(version_base=None, config_path="config", config_name="default")
 def my_app(cfg: DictConfig) -> None:
     # validation
     assert cfg.corrected_manifold.base_manifold_params.d == cfg.encoder.in_features, 'Encoder and manifold dimensions must match'
 
+    normal_estimation_cfg = OmegaConf.to_container(cfg.dataset.normal_estimation_cfg)
     dataset = instantiate(cfg.dataset)
     print('cfg dataset:', cfg.dataset)
     print('dataset:', dataset)
     print('dataset length:', len(dataset))
+    if normal_estimation_cfg is not None:
+        dataset.data_list[0] = EstimateNormalsTransform(normal_estimation_cfg)(dataset[0])
 
-    from sklearn.model_selection import train_test_split
     indices = list(range(len(dataset)))
-    labels = dataset.labels
 
-    train_indices, test_indices = train_test_split(indices,
-                                                   test_size=0.2,
-                                                   stratify=labels,
-                                                   random_state=cfg.dataset.seed)
+    # if isinstance(dataset, src.datasets.euclidean.MNISTPCADataset):
+    #     raise NotImplementedError('MNISTPCA dataset is not supported with PyG batches')
+    #     labels = dataset.labels
+    #     train_indices, test_indices = train_test_split(indices,
+    #                                                    test_size=0.2,
+    #                                                    stratify=labels,
+    #                                                    random_state=cfg.dataset.seed)
+    #
+    #     train_dataset = torch.utils.data.Subset(dataset, train_indices)
+    #     test_dataset = torch.utils.data.Subset(dataset, test_indices)
+    #
+    #     train_dataset.n_components = dataset.n_components
+    #     test_dataset.n_components = dataset.n_components
+    # else:
+        # train_indices, test_indices = train_test_split(indices,
+        #                                               test_size=0.2,
+        #                                               random_state=cfg.dataset.seed)
+        # train_dataset = torch.utils.data.Subset(dataset, train_indices)
+        # test_dataset = torch.utils.data.Subset(dataset, test_indices)
+    train_dataset = dataset
+    test_dataset = dataset
 
-    train_dataset = torch.utils.data.Subset(dataset, train_indices)
-    train_dataset.n_components = dataset.n_components
-    train_dataset.points = dataset.points
-    test_dataset = torch.utils.data.Subset(dataset, test_indices)
-    test_dataset.points = dataset.points
-    test_dataset.n_components = dataset.n_components
+    train_dataset.points = dataset.data_list[0].pos
+    test_dataset.points = dataset.data_list[0].pos
 
     train_loader = DataLoader(train_dataset, batch_size=len(train_dataset))
     test_loader = DataLoader(test_dataset, batch_size=len(test_dataset))
@@ -153,40 +179,44 @@ def my_app(cfg: DictConfig) -> None:
     print('test dataset length:', len(test_dataset))
     print('batch size OVERRIDDEN TO ALWAYS INCLUDE FULL DATASET')
 
-    tp = cfg['training_params']
-    pl.seed_everything(tp['seed'])
+    tp = cfg.training_params
+    pl.seed_everything(tp.seed)
 
-    model = LitManifoldMetricCorrector(cfg['corrected_manifold'],
-                                       cfg['encoder'],
-                                       cfg['loss'],
-                                       cfg['optimizer'],
-                                       decoder_cfg=cfg['decoder'],
-                                       scheduler_cfg=cfg['scheduler'])
+    model = LitManifoldMetricCorrector(corrected_manifold_cfg=cfg.corrected_manifold,
+                                       encoder_cfg=cfg.encoder,
+                                       loss_cfg=cfg.loss,
+                                       optimizer_cfg=cfg.optimizer,
+                                       decoder_cfg=cfg.decoder,
+                                       scheduler_cfg=cfg.scheduler)
 
     print('Plotter settings:')
-    print(cfg['plotter'])
+    print(cfg.plotter)
     callbacks = [pl.callbacks.lr_monitor.LearningRateMonitor(logging_interval='step'),
-                 instantiate(cfg['plotter'], dataset=train_dataset),
-                 pl.callbacks.ModelCheckpoint(monitor='val/distance_matrix_loss', mode='min', save_top_k=10,
-                                              every_n_epochs=cfg['plotter']['freq'])]
+                 instantiate(cfg.plotter, dataset=train_dataset)]
+                 #pl.callbacks.ModelCheckpoint(monitor='val/distance_matrix_loss', mode='min', save_top_k=10,
+                                              #every_n_epochs=cfg['plotter']['freq'])]
 
     hydra_cfg = HydraConfig.get()
     encoder_name = hydra_cfg.runtime.choices.encoder
     dataset_name = hydra_cfg.runtime.choices.dataset
-    name = tp['name'] + '/' + encoder_name + '_' + dataset_name
-    logger = pl.loggers.WandbLogger(project='normal-vectors', save_dir=tp['log_dir'], name=name, log_model=True)
+    name = tp.name + '/' + encoder_name + '_' + dataset_name
+    logger = pl.loggers.WandbLogger(project='normal-vectors',
+                                    save_dir=tp.log_dir,
+                                    name=name,
+                                    log_model=True)
 
     training_params = dict(
-        max_epochs=tp['max_epochs'],
-        accelerator=tp['accelerator'],
-        devices=tp['devices'],
-        default_root_dir=tp['trainer_root_dir'],
+        max_epochs=tp.max_epochs,
+        accelerator=tp.accelerator,
+        devices=tp.devices,
+        default_root_dir=tp.trainer_root_dir,
         logger=logger,
         log_every_n_steps=1,  # we use 1 batch so we want to log at every batch
         callbacks=callbacks,
-        check_val_every_n_epoch=cfg['plotter']['freq']
+        check_val_every_n_epoch=cfg.plotter.freq
     )
 
+    logger.watch(model, log='all')
     trainer = pl.Trainer(**training_params)
 
     trainer.fit(model, train_loader, test_loader, ckpt_path=tp.ckpt_path)

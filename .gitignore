@@ -1,4 +1,12 @@
 .idea/
 venv/
+
+artifacts/
+assets/
 unused/
 wandb/
+data/
+logs/
+notebooks/
+
+

@@ -1,0 +1,17 @@
+_target_: src.datasets.euclidean.SpiralDataset
+n_points: 100
+starting_angle: 0.
+ending_angle: 3.14
+center: True
+seed: 42
+normal_estimation_cfg:
+    boundary_cfg:
+        boundary_neighbor_thr: 0.1
+        boundary_sdf_thr: -0.2
+    lr: 0.1
+    noise_scale: 0.1
+    num_noisy_samples: 17
+    optimization_steps: 50
+    sdf_level_set: 0
+    sdf_loss_weight: 0.6
+    sdf_radius: -1.6

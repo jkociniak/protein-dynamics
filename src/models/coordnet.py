@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 
+from src.utils.tensor import validate_tensor
 
 class ReLULayer(nn.Module):
     def __init__(self, in_features, out_features, bias=True):
@@ -114,11 +115,13 @@ class FourierEmbedding(nn.Module):
         self.a = nn.Parameter(a, requires_grad=False)
 
     def forward(self, x):
-        Bx = torch.einsum('BNd,kd->BNk', x, self.B)
-        cosines = self.a * torch.cos(2 * torch.pi * Bx)
-        sines = self.a * torch.sin(2 * torch.pi * Bx)
-        out = torch.cat([cosines, sines], dim=2)
-        assert out.shape == (x.shape[0], x.shape[1], 2 * self.output_dim)
+        bsz = x.shape[:-1]
+        x = x.reshape(-1, x.shape[-1])
+        Bx = torch.einsum('Nd,kd->Nk', x, self.B) # N x K
+        cosines = self.a * torch.cos(2 * torch.pi * Bx)  # N x K
+        sines = self.a * torch.sin(2 * torch.pi * Bx)  # N x K
+        out = torch.cat([cosines, sines], dim=1)  # N x 2K
+        out = out.reshape(*bsz, -1)
         return out
 
 encoder_cfg = {
@@ -185,6 +188,8 @@ class CoordNetSmall(nn.Module):
         else:
             raise ValueError('Invalid first hidden layer type')
 
+        #head_layers.append(Debugger(name='dbg_after_1st_relu'))
+
         if second_hidden_type == 'relu':
             head_layers.append(ReLULayer(hidden_features, hidden_features))
         elif second_hidden_type == 'gelu':
@@ -195,11 +200,27 @@ class CoordNetSmall(nn.Module):
         else:
             raise ValueError('Invalid second hidden layer type')
 
+        #head_layers.append(Debugger(name='dbg_after_2nd_relu'))
+
         head_layers.append(nn.Linear(hidden_features, out_features))
+        #head_layers.append(Debugger(name='dbg_after_linear'))
+
         self.head = nn.Sequential(*head_layers)
 
     def forward(self, coords):
         coords = coords.clone().detach().requires_grad_(True)  # allows to take derivative w.r.t. input
         emb = self.emb(coords)
+        validate_tensor(emb, 'emb')
+        #print('Passed emb validation')
         output = self.head(emb)
         return output, coords
+
+
+class Debugger(nn.Module):
+    def __init__(self, name='debugger'):
+        self.name = name
+        super().__init__()
+
+    def forward(self, x):
+        validate_tensor(x, self.name)
+        return x

@@ -19,4 +19,8 @@ This repository consists of three main parts:
 2. The training script, `train_correction.py`, which is basically glues PyTorch Lightning runner and Hydra configuration system. 
    1. Running ```python train_correction.py``` will run the default configuration.
    2. Running ```python train_correction.py +experiment=experiment_name``` will run the experiment with the name `experiment_name`. This includes whole batches of experiments, used to reproduce experiments from the thesis.
-3. Config files for all objects used in the training process, which are located in the `conf` directory. It allows quickly changing encoder parameters, loss parameters, optimizer etc. It can also be done through Hydra overriding, like ```python train_correction.py dataset=helix3d encoder=relu/fourier_s0.5_relu encoder.input_dim=3 encoder.output_dim=2```. The input dimension of the encoder should be adjusted to the dataset dimension. 
+3. Config files for all objects used in the training process, which are located in the `conf` directory. It allows quickly changing encoder parameters, loss parameters, optimizer etc. It can also be done through Hydra overriding, like ```python train_correction.py dataset=helix3d encoder=relu/fourier_s0.5_relu encoder.input_dim=3 encoder.output_dim=2```. The input dimension of the encoder should be adjusted to the dataset dimension.
+
+## Use cases
+
+1. Default run: ```python train_correction.py```

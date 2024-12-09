@@ -1,0 +1,14 @@
+_target_: src.datasets.euclidean.Torus3DDataset
+n_points: 500
+normal_estimation_cfg:
+  boundary_cfg:
+    boundary_neighbor_thr: 0.9
+    boundary_sdf_thr: -0.5
+  log_sdf_radius: -1
+  lr: 0.1
+  noise_scale: 0.1
+  num_noisy_samples: 29
+  optimization_steps: 100
+  sdf_level_set: 0
+  sdf_loss_weight: 0.9
+
